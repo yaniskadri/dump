@@ -50,54 +50,49 @@ def visualiser_reconstruction(pdf_path):
     count_rect = 0
     
     for poly in polygones:
-        # ... dans la boucle for poly in polygones ...
+        from shapely.geometry import Polygon
+
+# ... (votre code précédent) ...
+
+for poly in polygones:
     
-    # 1. Nettoyage de base (simplification des micro-détails)
-        poly_clean = poly.simplify(0.1)
+    # ASTUCE CLÉ : On recrée un polygone NEUF en utilisant seulement l'extérieur.
+    # Cela "bouche" tous les trous créés par les rectangles internes.
+    poly_plein = Polygon(poly.exterior)
+
+    # On simplifie un peu l'extérieur pour les petits défauts d'alignement
+    poly_clean = poly_plein.simplify(1.0) # Tolérance de 1 unité
+    
+    # --- Calcul du Ratio (Sur la version "pleine") ---
+    box = poly_clean.minimum_rotated_rectangle
+    
+    is_rectangle = False
+    
+    if box.area > 0:
+        # On compare l'aire du polygone PLEIN avec sa boîte englobante
+        ratio = poly_clean.area / box.area
         
-        # 2. Calcul du "Rectangle Orienté Minimum" (La boîte idéale)
-        box = poly_clean.minimum_rotated_rectangle
-        
-        # 3. Calcul du score de ressemblance (Ratio d'aire)
-        # Si poly_clean est un rectangle parfait, aire_poly == aire_box, donc ratio = 1.0
-        aire_poly = poly_clean.area
-        aire_box = box.area
-        
-        is_rectangle = False
-        
-        # Sécurité division par zéro
-        if aire_box > 0:
-            ratio = aire_poly / aire_box
-            
-            # SI la forme remplit plus de 99% de sa boîte idéale
-            # ALORS on considère que c'est un rectangle
-            if ratio > 0.99:
-                is_rectangle = True
-        
-        # --- Classification et Affichage ---
-        
-        x, y = poly_clean.exterior.xy
-        
-        if is_rectangle:
-            # C'est un rectangle (même avec des points en trop sur les bords)
-            couleur = 'green'
-            label = "Rectangle (Corrigé)"
-            # Optionnel : Si vous voulez "nettoyer" la donnée pour l'export, 
-            # vous pouvez remplacer 'poly' par 'box' ici.
-        elif len(poly_clean.exterior.coords) - 1 == 3:
-            couleur = 'blue'
-            label = "Triangle"
+        # Tolérance de 0.90 (90%)
+        if ratio > 0.90:
+            is_rectangle = True
+
+    # --- Affichage ---
+    x, y = poly_clean.exterior.xy
+    
+    if is_rectangle:
+        couleur = 'green'
+        # On affiche "Container" pour différencier des rectangles simples
+        if poly.area != poly_plein.area:
+            label = "Rect (Conteneur)"
+            alpha_val = 0.2 # Plus transparent pour voir ce qu'il y a dedans
         else:
-            couleur = 'red'
-            label = "Autre"
+            label = "Rectangle"
+            alpha_val = 0.4
+    else:
+        couleur = 'red'
+        label = f"Ratio: {ratio:.2f}"
 
-        # Dessin
-        ax.fill(x, y, alpha=0.4, fc=couleur, ec='black', linewidth=1, zorder=2)
-        
-        # DEBUG : Afficher les points SEULEMENT si c'est encore rouge
-        if couleur == 'red':
-            ax.plot(x, y, 'o', color='yellow', markersize=4)
-
+    ax.fill(x, y, alpha=alpha_val, fc=couleur, ec='black', linewidth=1, zorder=2)
     # Inverser l'axe Y (car en PDF (0,0) est souvent en haut, en plot c'est en bas)
     ax.invert_yaxis()
     ax.set_aspect('equal') # Important pour ne pas déformer les rectangles
