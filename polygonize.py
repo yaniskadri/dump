@@ -50,29 +50,53 @@ def visualiser_reconstruction(pdf_path):
     count_rect = 0
     
     for poly in polygones:
-            # ... (dans la boucle for poly in polygones) ...
-
-        # Simplification très légère pour le test
-        poly_clean = poly.simplify(0.1) 
-        x, y = poly_clean.exterior.xy
-        nb_sommets = len(poly_clean.exterior.coords) - 1
+        # ... dans la boucle for poly in polygones ...
+    
+    # 1. Nettoyage de base (simplification des micro-détails)
+        poly_clean = poly.simplify(0.1)
         
-        # Classification
-        if nb_sommets == 4:
+        # 2. Calcul du "Rectangle Orienté Minimum" (La boîte idéale)
+        box = poly_clean.minimum_rotated_rectangle
+        
+        # 3. Calcul du score de ressemblance (Ratio d'aire)
+        # Si poly_clean est un rectangle parfait, aire_poly == aire_box, donc ratio = 1.0
+        aire_poly = poly_clean.area
+        aire_box = box.area
+        
+        is_rectangle = False
+        
+        # Sécurité division par zéro
+        if aire_box > 0:
+            ratio = aire_poly / aire_box
+            
+            # SI la forme remplit plus de 99% de sa boîte idéale
+            # ALORS on considère que c'est un rectangle
+            if ratio > 0.99:
+                is_rectangle = True
+        
+        # --- Classification et Affichage ---
+        
+        x, y = poly_clean.exterior.xy
+        
+        if is_rectangle:
+            # C'est un rectangle (même avec des points en trop sur les bords)
             couleur = 'green'
-            label = "Rectangle"
+            label = "Rectangle (Corrigé)"
+            # Optionnel : Si vous voulez "nettoyer" la donnée pour l'export, 
+            # vous pouvez remplacer 'poly' par 'box' ici.
+        elif len(poly_clean.exterior.coords) - 1 == 3:
+            couleur = 'blue'
+            label = "Triangle"
         else:
-            couleur = 'red'  # C'est visuellement un rectangle, mais techniquement non
-            label = f"Complexe ({nb_sommets} pts)"
+            couleur = 'red'
+            label = "Autre"
 
-        # Dessin de la forme
+        # Dessin
         ax.fill(x, y, alpha=0.4, fc=couleur, ec='black', linewidth=1, zorder=2)
         
-        # --- DEBUG : AFFICHER LES SOMMETS ---
-        # Si c'est rouge, on dessine les points pour voir où sont les "intrus"
+        # DEBUG : Afficher les points SEULEMENT si c'est encore rouge
         if couleur == 'red':
-            # On dessine des points jaunes sur chaque sommet
-            ax.plot(x, y, 'o', color='yellow', markersize=4, zorder=3)
+            ax.plot(x, y, 'o', color='yellow', markersize=4)
 
     # Inverser l'axe Y (car en PDF (0,0) est souvent en haut, en plot c'est en bas)
     ax.invert_yaxis()
