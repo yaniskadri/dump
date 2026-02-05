@@ -50,26 +50,29 @@ def visualiser_reconstruction(pdf_path):
     count_rect = 0
     
     for poly in polygones:
-        # Simplification légère pour ignorer les micro-vibrations
-        poly_clean = poly.simplify(0.1)
-        x, y = poly_clean.exterior.xy
-        
-        # Classification simple
-        nb_sommets = len(poly_clean.exterior.coords) - 1 # -1 car le point de fermeture compte double
-        
-        if nb_sommets == 4:
-            couleur = 'green' # Rectangle / Quadrilatère
-            label = "Rectangle"
-            count_rect += 1
-        elif nb_sommets == 3:
-            couleur = 'blue' # Triangle
-            label = "Triangle"
-        else:
-            couleur = 'red' # Complexe
-            label = "Autre"
+            # ... (dans la boucle for poly in polygones) ...
 
-        # Remplissage semi-transparent
+        # Simplification très légère pour le test
+        poly_clean = poly.simplify(0.1) 
+        x, y = poly_clean.exterior.xy
+        nb_sommets = len(poly_clean.exterior.coords) - 1
+        
+        # Classification
+        if nb_sommets == 4:
+            couleur = 'green'
+            label = "Rectangle"
+        else:
+            couleur = 'red'  # C'est visuellement un rectangle, mais techniquement non
+            label = f"Complexe ({nb_sommets} pts)"
+
+        # Dessin de la forme
         ax.fill(x, y, alpha=0.4, fc=couleur, ec='black', linewidth=1, zorder=2)
+        
+        # --- DEBUG : AFFICHER LES SOMMETS ---
+        # Si c'est rouge, on dessine les points pour voir où sont les "intrus"
+        if couleur == 'red':
+            # On dessine des points jaunes sur chaque sommet
+            ax.plot(x, y, 'o', color='yellow', markersize=4, zorder=3)
 
     # Inverser l'axe Y (car en PDF (0,0) est souvent en haut, en plot c'est en bas)
     ax.invert_yaxis()
