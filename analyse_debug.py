@@ -11,6 +11,19 @@ def visualiser_vecteurs(pdf_path, output_image="visualisation_debug.png"):
     
     for chemin in chemins:
         items = chemin["items"]
+
+        # ... début de la boucle ...
+        items = chemin["items"]
+        
+        # Récupérer l'épaisseur du trait (width)
+        # Parfois c'est stocké dans chemin['width'], parfois il faut regarder le style
+        stroke_width = chemin.get("width", 0) # 0 par défaut si non trouvé
+        
+        # Si c'est un seul segment mais qu'il est épais, c'est un "Faux Rectangle"
+        if len(items) == 1 and stroke_width > 1:
+            print(f"Objet {chemin['seqno']} : Ligne unique mais ÉPAISSE (Width: {stroke_width}) -> Ressemble à un rectangle !")
+        
+        # ... suite du script ...
         
         # Sécurité : Si l'objet n'a pas de bounding box valide, on passe
         if not chemin["rect"]:
