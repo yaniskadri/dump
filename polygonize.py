@@ -49,59 +49,91 @@ def analyse_structurelle_finale(pdf_path):
 
     compteur_rect = 0
 
-    for i, poly in enumerate(polygones):
-        try:
-            # A. NETTOYAGE : On "bouche" les trous (Donut -> Plein)
-            # On prend l'extérieur uniquement
-            poly_plein = Polygon(poly.exterior)
+    # ... (Dans la boucle for poly in polygones) ...
+
+            # 1. PRÉPARATION DES VERSIONS
+            # Version "Pleine" (On bouche les trous pour voir la forme globale)
+            poly_enveloppe = Polygon(poly.exterior).simplify(1.0)
+            # Version "Matière" (La forme réelle avec ses trous éventuels)
+            poly_matiere = poly.simplify(1.0)
+
+            # 2. CALCUL DU RATIO GÉOMÉTRIQUE (Basé sur l'enveloppe extérieure)
+            box = poly_enveloppe.minimum_rotated_rectangle
             
-            # B. SIMPLIFICATION : On lisse les coins (Tolérance 1.0)
-            poly_clean = poly_plein.simplify(1.0)
-            
-            # C. CALCUL DU RATIO (Aire forme / Aire boite)
-            box = poly_clean.minimum_rotated_rectangle
-            
-            ratio = 0
+            ratio_forme = 0
             if box.area > 0:
-                ratio = poly_clean.area / box.area
+                ratio_forme = poly_enveloppe.area / box.area
             
-            # D. DECISION
-            is_rectangle = False
-            if ratio > 0.88: # Tolérance 88% (assez large pour capturer les rectangles sales)
-                is_rectangle = True
-            
-            # E. PREPARATION DESSIN (Couleurs)
-            if is_rectangle:
-                couleur = 'green'
-                alpha_val = 0.4
-                label = "Rect"
-                compteur_rect += 1
+            # 3. CALCUL DU RATIO DE DENSITÉ (Plein ou Vide ?)
+            # Si densité ~ 1.0, c'est un bloc plein. Si densité ~ 0.2, c'est un cadre.
+            ratio_densite = 0
+            if poly_enveloppe.area > 0:
+                ratio_densite = poly_matiere.area / poly_enveloppe.area
+
+            # --- ARBRE DE DÉCISION ---
+            label = ""
+            couleur = "red"
+            alpha_val = 0.4
+            z_order = 2
+            is_valid_shape = False
+
+            # A. EST-CE UNE FORME RECTANGULAIRE EXTÉRIEUREMENT ?
+            if ratio_forme > 0.88:
+                is_valid_shape = True
                 
-                # Petit détail : Si l'aire a changé radicalement, c'était un conteneur
-                if abs(poly.area - poly_plein.area) > 1:
-                    couleur = '#006400' # Vert foncé pour les conteneurs
-                    label = "Container"
+                # C'est un rectangle. Mais quel type ?
+                if ratio_densite > 0.90:
+                    # C'est un OBJET PLEIN (ex: un mur, une machine)
+                    couleur = 'green'
+                    label = "Objet"
+                    alpha_val = 0.5
+                    z_order = 3 # Au dessus des conteneurs
+                else:
+                    # C'est un CONTENEUR (ex: le cadre à 0.19)
+                    # Il est rectangulaire dehors, mais vide dedans.
+                    couleur = 'blue' 
+                    label = "Groupe/Conteneur"
+                    alpha_val = 0.1 # Très transparent pour voir ce qu'il y a dedans
+                    z_order = 1 # En arrière plan
+            
+            # B. EST-CE UN HEXAGONE ?
+            elif 0.70 < ratio_forme < 0.80:
+                couleur = 'orange'
+                label = "Hexagone"
+                is_valid_shape = True
+
+            # C. LE RESTE (Formes complexes non identifiées)
             else:
                 couleur = 'red'
+                label = f"R:{ratio_forme:.2f}"
                 alpha_val = 0.2
-                label = f"{ratio:.2f}"
 
-            # F. DESSIN (Sécurisé)
-            # On dessine poly_clean (la forme pleine et lissée)
-            if not poly_clean.is_empty:
-                x, y = poly_clean.exterior.xy
-                ax.fill(x, y, alpha=alpha_val, fc=couleur, ec='black', linewidth=0.5, zorder=2)
+            # --- DESSIN ---
+            if is_valid_shape:
+                # On dessine l'enveloppe pour les conteneurs (pour avoir un fond uni)
+                # ou la matière pour les objets (pour garder la précision)
                 
-                # Si c'est rouge, on écrit le ratio pour comprendre pourquoi
-                if not is_rectangle and poly_clean.area > 50: # On n'écrit pas sur les minuscules trucs
-                    cx, cy = poly_clean.centroid.x, poly_clean.centroid.y
-                    ax.text(cx, cy, label, fontsize=6, color='darkred', ha='center')
+                if label == "Groupe/Conteneur":
+                    # Pour le conteneur, on dessine juste le cadre extérieur en pointillé (simulé)
+                    # On utilise l'enveloppe
+                    x, y = poly_enveloppe.exterior.xy
+                    ax.plot(x, y, color='blue', linewidth=1.5, linestyle='--') # Bordure bleue
+                    ax.fill(x, y, alpha=0.05, fc='blue', zorder=z_order) # Fond très léger
+                    
+                    # Optionnel : Afficher le label en haut à gauche du conteneur
+                    minx, miny, maxx, maxy = poly_enveloppe.bounds
+                    ax.text(minx, maxy, "GROUPE", color='blue', fontsize=6, verticalalignment='bottom')
+                    
+                else:
+                    # Pour les objets verts/oranges, on remplit normalement
+                    x, y = poly_matiere.exterior.xy
+                    ax.fill(x, y, alpha=alpha_val, fc=couleur, ec='black', linewidth=0.5, zorder=z_order)
 
-        except Exception as e:
-            # Si un polygone spécifique plante, on l'ignore et on continue les autres
-            print(f"Erreur sur le polygone {i}: {e}")
-            continue
-
+            else:
+                # Erreurs (Rouge)
+                x, y = poly_matiere.exterior.xy
+                ax.fill(x, y, alpha=alpha_val, fc=couleur, ec=couleur, zorder=z_order)
+                
     ax.invert_yaxis()
     ax.set_aspect('equal')
     print(f"Terminé ! {compteur_rect} rectangles validés (Vert).")
