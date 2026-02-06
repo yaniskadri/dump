@@ -1,17 +1,24 @@
 """
-graph_extractor.py — Extraction de composants fermés par théorie des graphes.
+graph_extractor.py — Extraction de composants fermés par topologie vectorielle.
 
-Stratégie :
-  1. Construire un graphe NetworkX à partir des segments vectoriels.
-  2. Trouver les cycles minimaux (minimum_cycle_basis).
-  3. Filtrer les faux cycles (croisements de fils) via le Node Degree Filter :
-     - Si > 50% des nœuds d'un cycle ont un degré ≥ 4 → croisement → rejeté.
-  4. Convertir les cycles valides en polygones Shapely.
+Stratégie corrigée (v2) :
+  1. Shapely `polygonize` sur tous les segments → trouve TOUTES les faces fermées
+     (petits rectangles de composants ET artefacts de croisements de fils).
+  2. Construire un graphe NetworkX pour calculer le degré de chaque nœud.
+  3. Node Degree Filter : pour chaque face, vérifier si ses sommets sont
+     majoritairement des croisements (degré ≥ 4) → rejeter.
+  4. Filtre "Vide & Solitaire" : rejeter les faces sans texte ni voisins.
+
+Pourquoi pas minimum_cycle_basis ?
+  → Il retourne une base algébrique (~10 gros cycles englobants), pas les
+    petites faces individuelles. Le degree filter n'a aucun effet dessus.
+  → polygonize est conçu exactement pour trouver les faces d'un arrangement
+    planaire de lignes — c'est précisément ce dont on a besoin.
 """
 
 import networkx as nx
-from shapely.geometry import Polygon, box
-from shapely.ops import unary_union
+from shapely.geometry import Polygon, box, LineString
+from shapely.ops import unary_union, polygonize
 
 from .config import GraphConfig, ClassifierConfig
 from .vector_utils import VectorSegment
@@ -21,77 +28,126 @@ def build_graph(segments: list[VectorSegment], precision: int = 1) -> nx.Graph:
     """
     Construit un graphe non-orienté à partir des segments vectoriels.
     Les coordonnées sont arrondies pour fusionner les nœuds proches.
+    Sert uniquement à calculer les degrés des nœuds (pas pour les cycles).
     """
     G = nx.Graph()
     for seg in segments:
         p1, p2 = seg.as_rounded_endpoints(precision)
-        if p1 != p2:  # Ignorer les segments dégénérés (point)
+        if p1 != p2:
             G.add_edge(p1, p2)
     return G
 
 
-def extract_cycles(G: nx.Graph, config: GraphConfig) -> list[list[tuple]]:
+def get_node_degrees(G: nx.Graph) -> dict:
+    """Retourne un dict {(x,y): degré} pour tous les nœuds du graphe."""
+    return dict(G.degree())
+
+
+def find_all_faces(segments: list[VectorSegment]) -> list[Polygon]:
     """
-    Extrait les cycles minimaux du graphe et filtre les croisements de fils.
+    Utilise Shapely polygonize pour trouver toutes les faces fermées
+    dans l'arrangement planaire des segments vectoriels.
     
-    Le Node Degree Filter :
-      - Pour chaque cycle, on compte combien de nœuds ont degré ≥ 4.
-      - Si ce ratio dépasse max_cross_ratio → c'est un croisement de fils → rejeté.
-      - Les vrais composants ont des coins "propres" (degré 2 = angle en L).
-    
-    Returns:
-        Liste de cycles valides (chaque cycle = liste de coordonnées (x, y)).
+    C'est la bonne méthode pour trouver les petits rectangles individuels
+    (composants ET croisements de fils — on filtre après).
     """
+    lines = []
+    for seg in segments:
+        ls = seg.as_linestring()
+        if ls.length > 0:
+            lines.append(ls)
+
+    if not lines:
+        return []
+
     try:
-        raw_cycles = nx.minimum_cycle_basis(G)
+        merged = unary_union(lines)
+        faces = list(polygonize(merged))
     except Exception:
         return []
 
-    valid_cycles = []
-
-    for cycle_nodes in raw_cycles:
-        if len(cycle_nodes) < config.min_cycle_nodes:
-            continue
-
-        # ---- NODE DEGREE FILTER ----
-        cross_junctions = 0
-        for node in cycle_nodes:
-            if G.degree[node] >= 4:  # Nœud carrefour (X ou +)
-                cross_junctions += 1
-
-        ratio = cross_junctions / len(cycle_nodes) if cycle_nodes else 1.0
-        if ratio > config.max_cross_ratio:
-            continue  # Croisement de fils → poubelle
-
-        valid_cycles.append(cycle_nodes)
-
-    return valid_cycles
+    return faces
 
 
-def cycles_to_polygons(
-    cycles: list[list[tuple]],
+def snap_to_graph(coord: tuple, node_degrees: dict, tolerance: float = 1.5) -> int:
+    """
+    Trouve le degré du nœud du graphe le plus proche d'une coordonnée.
+    
+    Les coordonnées polygonize ne sont pas toujours exactement alignées
+    avec les nœuds du graphe (arrondis), donc on cherche le plus proche.
+    
+    Returns:
+        Degré du nœud le plus proche, ou 0 si aucun nœud trouvé.
+    """
+    cx, cy = round(coord[0], 1), round(coord[1], 1)
+    
+    # Essai exact d'abord
+    if (cx, cy) in node_degrees:
+        return node_degrees[(cx, cy)]
+    
+    # Recherche par proximité
+    best_deg = 0
+    best_dist = tolerance
+    for (nx_, ny_), deg in node_degrees.items():
+        dist = abs(nx_ - coord[0]) + abs(ny_ - coord[1])  # Manhattan rapide
+        if dist < best_dist:
+            best_dist = dist
+            best_deg = deg
+    
+    return best_deg
+
+
+def filter_by_node_degree(
+    faces: list[Polygon],
+    node_degrees: dict,
+    config: GraphConfig,
     cls_config: ClassifierConfig,
-) -> list[Polygon]:
+) -> tuple[list[Polygon], list[Polygon]]:
     """
-    Convertit les cycles (listes de points) en polygones Shapely.
-    Filtre par aire min/max et validité géométrique.
+    Filtre les faces par degré des nœuds + aire.
+    
+    Logique :
+      - Extraire les sommets de chaque face.
+      - Compter combien ont degré ≥ 4 dans le graphe (= croisements).
+      - Si le ratio de croisements > max_cross_ratio → artefact → rejeté.
+      - Un vrai composant a des coins "propres" (degré 2 ou 3).
+    
+    Returns:
+        (faces_gardées, faces_rejetées) pour le debug.
     """
-    polygons = []
-    for cycle in cycles:
-        if len(cycle) < 3:
+    kept = []
+    rejected = []
+
+    for face in faces:
+        # Filtre par aire
+        if face.area < cls_config.min_area or face.area > cls_config.max_area:
             continue
-        try:
-            poly = Polygon(cycle)
-            if not poly.is_valid:
-                poly = poly.buffer(0)  # Tenter réparation
-            if not poly.is_valid:
+
+        if not face.is_valid:
+            face = face.buffer(0)
+            if not face.is_valid:
                 continue
-            if poly.area < cls_config.min_area or poly.area > cls_config.max_area:
-                continue
-            polygons.append(poly)
-        except Exception:
+
+        # Extraire les sommets du polygone (sans le dernier qui = premier)
+        coords = list(face.exterior.coords)[:-1]
+        if len(coords) < 3:
             continue
-    return polygons
+
+        # Compter les nœuds de croisement
+        cross_count = 0
+        for coord in coords:
+            deg = snap_to_graph(coord, node_degrees)
+            if deg >= 4:
+                cross_count += 1
+
+        ratio = cross_count / len(coords)
+
+        if ratio > config.max_cross_ratio:
+            rejected.append(face)
+        else:
+            kept.append(face)
+
+    return kept, rejected
 
 
 def filter_isolated_empty(
@@ -104,13 +160,6 @@ def filter_isolated_empty(
     
     Un composant légitime a soit du texte à l'intérieur, soit fait partie
     d'une grille de connecteurs (voisins qui se touchent).
-    
-    Args:
-        candidates: Polygones candidats.
-        text_bboxes: Tuples (x0, y0, x1, y1, text) des blocs texte.
-    
-    Returns:
-        Polygones filtrés.
     """
     if not candidates:
         return []
@@ -133,7 +182,6 @@ def filter_isolated_empty(
         # C. Décision
         if has_text or neighbors >= 1:
             valid.append(poly)
-        # Sinon → vide et solitaire → croisement de fils → rejeté
 
     return valid
 
@@ -145,22 +193,34 @@ def run_graph_extraction(
     cls_config: ClassifierConfig,
 ) -> list[Polygon]:
     """
-    Pipeline complète d'extraction par graphe.
+    Pipeline complète d'extraction par topologie vectorielle.
+    
+    Étapes :
+      1. polygonize → toutes les faces fermées
+      2. build_graph → degrés des nœuds
+      3. Node Degree Filter → rejeter les croisements de fils
+      4. Filtre Vide & Solitaire → rejeter les faces sans contenu
     
     Returns:
         Liste de Polygones Shapely représentant les composants fermés détectés.
     """
-    # 1. Construction du graphe
-    G = build_graph(segments, graph_config.coord_precision)
-
-    if G.number_of_edges() == 0:
+    if not segments:
         return []
 
-    # 2. Extraction des cycles + Node Degree Filter
-    valid_cycles = extract_cycles(G, graph_config)
+    # 1. Trouver toutes les faces fermées via polygonize
+    all_faces = find_all_faces(segments)
 
-    # 3. Conversion en polygones
-    candidates = cycles_to_polygons(valid_cycles, cls_config)
+    if not all_faces:
+        return []
+
+    # 2. Construire le graphe pour les degrés des nœuds
+    G = build_graph(segments, graph_config.coord_precision)
+    node_degrees = get_node_degrees(G)
+
+    # 3. Node Degree Filter
+    candidates, _rejected = filter_by_node_degree(
+        all_faces, node_degrees, graph_config, cls_config,
+    )
 
     # 4. Filtre Vide & Solitaire
     filtered = filter_isolated_empty(candidates, text_bboxes)

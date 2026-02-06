@@ -28,11 +28,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import fitz
 import numpy as np
-import networkx as nx
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.gridspec import GridSpec
-from shapely.geometry import Polygon, box, Point
+from shapely.geometry import box
 from sklearn.cluster import DBSCAN
 
 from hybrid_pipeline.config import (
@@ -40,7 +39,8 @@ from hybrid_pipeline.config import (
 )
 from hybrid_pipeline.vector_utils import extract_segments_from_page, extract_text_blocks
 from hybrid_pipeline.graph_extractor import (
-    build_graph, extract_cycles, cycles_to_polygons, filter_isolated_empty,
+    build_graph, find_all_faces, get_node_degrees,
+    filter_by_node_degree, filter_isolated_empty,
 )
 from hybrid_pipeline.dbscan_extractor import (
     filter_segments_by_length, remove_already_captured, cluster_segments,
@@ -49,6 +49,30 @@ from hybrid_pipeline.classifier import (
     classify_all, compute_metrics, classify_polygon, DetectedComponent,
 )
 from hybrid_pipeline.visualizer import CATEGORY_COLORS
+
+
+def save_figure(fig, save_dir, fname, dpi=None):
+    """Sauvegarde `fig` dans `save_dir/fname`, ajoute une entrée dans save_manifest.txt
+
+    Retourne le chemin absolu sauvegardé.
+    """
+    if not save_dir:
+        return None
+    os.makedirs(save_dir, exist_ok=True)
+    path = os.path.join(save_dir, fname)
+    # Utiliser dpi si fourni
+    if dpi:
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    else:
+        fig.savefig(path, bbox_inches="tight")
+    manifest = os.path.join(save_dir, "save_manifest.txt")
+    try:
+        with open(manifest, "a", encoding="utf-8") as f:
+            f.write(path + "\n")
+    except Exception:
+        pass
+    print(f"💾 Saved: {path}")
+    return path
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -194,57 +218,45 @@ def viz_graph_nodes(ax, page, G):
 #  VIZ 3 — CYCLES : BRUTS vs FILTRÉS
 # ═══════════════════════════════════════════════════════════════
 
-def viz_cycles_comparison(ax, page, G, config):
-    """Montre les cycles avant et après le Node Degree Filter."""
+def viz_faces_comparison(ax, page, all_faces, kept_faces, rejected_faces, config):
+    """Montre les faces polygonize avant et après le Node Degree Filter."""
     bg = get_page_background(page)
     ax.imshow(bg, alpha=0.2)
 
-    try:
-        raw_cycles = nx.minimum_cycle_basis(G)
-    except Exception:
-        ax.set_title("VIZ 3 — Cycles (ERREUR)")
+    if not all_faces:
+        ax.set_title("VIZ 3 — Faces polygonize (AUCUNE)")
         return
 
-    valid_cycles = extract_cycles(G, config.graph)
+    # Dessiner les rejetées en rouge semi-transparent
+    for face in rejected_faces:
+        try:
+            x, y = face.exterior.xy
+            ax.fill(x, y, alpha=0.25, fc="#FF4444", ec="#CC0000", linewidth=0.5, zorder=2)
+        except Exception:
+            pass
 
-    # Calculer les cycles rejetés
-    valid_set = {tuple(sorted(map(tuple, c))) for c in valid_cycles}
-    rejected = [c for c in raw_cycles if tuple(sorted(map(tuple, c))) not in valid_set]
+    # Dessiner les gardées en vert
+    for face in kept_faces:
+        try:
+            x, y = face.exterior.xy
+            ax.fill(x, y, alpha=0.4, fc="#00CC00", ec="#006400", linewidth=1, zorder=3)
+        except Exception:
+            pass
 
-    # Dessiner les rejetés en rouge semi-transparent
-    for cycle in rejected:
-        if len(cycle) >= 3:
-            try:
-                poly = Polygon(cycle)
-                if poly.is_valid:
-                    x, y = poly.exterior.xy
-                    ax.fill(x, y, alpha=0.3, fc="#FF4444", ec="#CC0000", linewidth=0.5, zorder=2)
-            except Exception:
-                pass
-
-    # Dessiner les validés en vert
-    for cycle in valid_cycles:
-        if len(cycle) >= 3:
-            try:
-                poly = Polygon(cycle)
-                if poly.is_valid:
-                    x, y = poly.exterior.xy
-                    ax.fill(x, y, alpha=0.4, fc="#00CC00", ec="#006400", linewidth=1, zorder=3)
-            except Exception:
-                pass
+    # Faces filtrées par aire (ni dans kept ni dans rejected)
+    n_area_filtered = len(all_faces) - len(kept_faces) - len(rejected_faces)
 
     ax.set_title(
         f"VIZ 3 — Node Degree Filter (cross_ratio={config.graph.max_cross_ratio})\n"
-        f"🟢 Gardés: {len(valid_cycles)}   "
-        f"🔴 Rejetés: {len(rejected)}   "
-        f"Total brut: {len(raw_cycles)}",
+        f"🟢 Gardés: {len(kept_faces)}   "
+        f"🔴 Rejetés degré: {len(rejected_faces)}   "
+        f"⚪ Filtrés aire: {n_area_filtered}   "
+        f"Total polygonize: {len(all_faces)}",
         fontsize=10,
     )
     ax.set_xlim(0, page.rect.width)
     ax.set_ylim(page.rect.height, 0)
     ax.set_aspect("equal")
-
-    return len(raw_cycles), len(valid_cycles), len(rejected)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -546,8 +558,8 @@ def print_detailed_stats(components, segments, G, raw_cycle_count, valid_cycle_c
         label = {1: "bout", 2: "coin ✓", 3: "T-junction", 4: "croisement ✗"}.get(d, f"≥{d}")
         print(f"   Degré {d} ({label}) : {deg_counts[d]}")
 
-    print(f"\n🔄 Cycles :")
-    print(f"   Bruts : {raw_cycle_count}")
+    print(f"\n🔄 Faces (polygonize) :")
+    print(f"   Brutes (polygonize) : {raw_cycle_count}")
     print(f"   Après Node Degree Filter : {valid_cycle_count}")
     print(f"   Rejetés (croisements) : {raw_cycle_count - valid_cycle_count}")
     if raw_cycle_count > 0:
@@ -625,21 +637,22 @@ def run_debug(pdf_path, page_index=0, config=None, save_dir=None):
     G = build_graph(segments, config.graph.coord_precision)
     print(f"   {G.number_of_nodes()} nœuds, {G.number_of_edges()} arêtes")
 
-    # ── Étape 3 : Cycles ──
-    print("⏳ Extraction des cycles...")
-    try:
-        raw_cycles = nx.minimum_cycle_basis(G)
-        raw_count = len(raw_cycles)
-    except Exception:
-        raw_cycles = []
-        raw_count = 0
-    valid_cycles = extract_cycles(G, config.graph)
-    valid_count = len(valid_cycles)
-    print(f"   {raw_count} bruts → {valid_count} après filtre degré")
+    # ── Étape 3 : Faces fermées (polygonize) ──
+    print("⏳ Polygonize → détection de toutes les faces fermées...")
+    all_faces = find_all_faces(segments)
+    raw_count = len(all_faces)
+    print(f"   {raw_count} faces fermées trouvées par polygonize")
 
-    # ── Étape 4 : Polygones graph ──
-    print("⏳ Conversion en polygones + filtre vide/solitaire...")
-    candidates = cycles_to_polygons(valid_cycles, config.classifier)
+    print("⏳ Node Degree Filter...")
+    node_degrees = get_node_degrees(G)
+    candidates, rejected_faces = filter_by_node_degree(
+        all_faces, node_degrees, config.graph, config.classifier,
+    )
+    valid_count = len(candidates)
+    print(f"   {raw_count} brutes → {valid_count} gardées, {len(rejected_faces)} rejetées (croisements)")
+
+    # ── Étape 4 : Filtre vide/solitaire ──
+    print("⏳ Filtre vide & solitaire...")
     graph_polygons = filter_isolated_empty(candidates, text_bboxes)
     print(f"   {len(candidates)} candidats → {len(graph_polygons)} après filtre contenu")
 
@@ -677,50 +690,109 @@ def run_debug(pdf_path, page_index=0, config=None, save_dir=None):
     # ── VISUALISATIONS ──
     print("\n⏳ Génération des visualisations...")
 
-    # Figure principale : 3 lignes × 2 colonnes + 1 ligne histogrammes
-    fig = plt.figure(figsize=(24, 28))
-    gs = GridSpec(4, 4, figure=fig, hspace=0.3, wspace=0.25)
+    # Par défaut on affiche la figure combinée haute résolution si split False
+    if not getattr(config, "_viz_split", False):
+        # Figure principale : 3 lignes × 2 colonnes + 1 ligne histogrammes
+        fig = plt.figure(figsize=(24, 28))
+        gs = GridSpec(4, 4, figure=fig, hspace=0.3, wspace=0.25)
 
-    # Ligne 1 : Segments bruts + Graphe nœuds
-    ax1 = fig.add_subplot(gs[0, :2])
-    viz_raw_segments(ax1, page, segments, text_bboxes)
+        # Ligne 1 : Segments bruts + Graphe nœuds
+        ax1 = fig.add_subplot(gs[0, :2])
+        viz_raw_segments(ax1, page, segments, text_bboxes)
 
-    ax2 = fig.add_subplot(gs[0, 2:])
-    viz_graph_nodes(ax2, page, G)
+        ax2 = fig.add_subplot(gs[0, 2:])
+        viz_graph_nodes(ax2, page, G)
 
-    # Ligne 2 : Cycles comparaison + DBSCAN
-    ax3 = fig.add_subplot(gs[1, :2])
-    viz_cycles_comparison(ax3, page, G, config)
+        # Ligne 2 : Cycles comparaison + DBSCAN
+        ax3 = fig.add_subplot(gs[1, :2])
+        viz_faces_comparison(ax3, page, all_faces, candidates, rejected_faces, config)
 
-    ax4 = fig.add_subplot(gs[1, 2:])
-    viz_dbscan_clusters(ax4, page, segments, graph_polygons, config)
+        ax4 = fig.add_subplot(gs[1, 2:])
+        viz_dbscan_clusters(ax4, page, segments, graph_polygons, config)
 
-    # Ligne 3 : Résultat final + Scatter métriques
-    ax5 = fig.add_subplot(gs[2, :2])
-    viz_final_result(ax5, page, all_components)
+        # Ligne 3 : Résultat final + Scatter métriques
+        ax5 = fig.add_subplot(gs[2, :2])
+        viz_final_result(ax5, page, all_components)
 
-    viz_scatter_metrics(fig, gs[2, 2:], all_components)
+        viz_scatter_metrics(fig, gs[2, 2:], all_components)
 
-    # Ligne 4 : Histogrammes (4 colonnes)
-    all_polys = graph_polygons + dbscan_polygons
-    viz_histograms(fig, [gs[3, i] for i in range(4)], all_polys, config)
+        # Ligne 4 : Histogrammes (4 colonnes)
+        all_polys = graph_polygons + dbscan_polygons
+        viz_histograms(fig, [gs[3, i] for i in range(4)], all_polys, config)
 
-    fig.suptitle(
-        f"🔍 DEBUG — {os.path.basename(pdf_path)} — Page {page_index + 1}\n"
-        f"{len(all_components)} composants (Graph: {sum(1 for c in all_components if c.source == 'graph')}, "
-        f"DBSCAN: {sum(1 for c in all_components if c.source == 'dbscan')}) — {elapsed:.2f}s",
-        fontsize=16, fontweight="bold", y=0.995,
-    )
+        fig.suptitle(
+            f"🔍 DEBUG — {os.path.basename(pdf_path)} — Page {page_index + 1}\n"
+            f"{len(all_components)} composants (Graph: {sum(1 for c in all_components if c.source == 'graph')}, "
+            f"DBSCAN: {sum(1 for c in all_components if c.source == 'dbscan')}) — {elapsed:.2f}s",
+            fontsize=16, fontweight="bold", y=0.995,
+        )
 
-    if save_dir:
-        os.makedirs(save_dir, exist_ok=True)
-        fname = f"debug_{os.path.splitext(os.path.basename(pdf_path))[0]}_p{page_index}.png"
-        save_path = os.path.join(save_dir, fname)
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"\n💾 Figure sauvegardée → {save_path}")
+        if save_dir:
+            fname = f"debug_{os.path.splitext(os.path.basename(pdf_path))[0]}_p{page_index}.png"
+            save_figure(fig, save_dir, fname, dpi=getattr(config, "_viz_dpi", 150))
 
-    plt.show()
-    doc.close()
+        plt.show()
+        doc.close()
+
+    else:
+        # Split mode: afficher chaque panneau séparément en haute résolution
+        viz_dpi = getattr(config, "_viz_dpi", 200)
+        # VIZ 1
+        fig = plt.figure(figsize=(12, 9), dpi=viz_dpi)
+        ax = fig.add_subplot(1, 1, 1)
+        viz_raw_segments(ax, page, segments, text_bboxes)
+        if save_dir:
+            save_figure(fig, save_dir, f"viz1_raw_segments_p{page_index}.png", dpi=viz_dpi)
+        plt.show()
+        plt.close(fig)
+
+        # VIZ 2
+        fig = plt.figure(figsize=(12, 9), dpi=viz_dpi)
+        ax = fig.add_subplot(1, 1, 1)
+        viz_graph_nodes(ax, page, G)
+        if save_dir:
+            save_figure(fig, save_dir, f"viz2_graph_nodes_p{page_index}.png", dpi=viz_dpi)
+        plt.show()
+        plt.close(fig)
+
+        # VIZ 3
+        fig = plt.figure(figsize=(12, 9), dpi=viz_dpi)
+        ax = fig.add_subplot(1, 1, 1)
+        viz_faces_comparison(ax, page, all_faces, candidates, rejected_faces, config)
+        if save_dir:
+            save_figure(fig, save_dir, f"viz3_cycles_p{page_index}.png", dpi=viz_dpi)
+        plt.show()
+        plt.close(fig)
+
+        # VIZ 4
+        fig = plt.figure(figsize=(12, 9), dpi=viz_dpi)
+        ax = fig.add_subplot(1, 1, 1)
+        viz_dbscan_clusters(ax, page, segments, graph_polygons, config)
+        if save_dir:
+            save_figure(fig, save_dir, f"viz4_dbscan_p{page_index}.png", dpi=viz_dpi)
+        plt.show()
+        plt.close(fig)
+
+        # VIZ 5
+        fig = plt.figure(figsize=(12, 9), dpi=viz_dpi)
+        ax = fig.add_subplot(1, 1, 1)
+        viz_final_result(ax, page, all_components)
+        if save_dir:
+            save_figure(fig, save_dir, f"viz5_final_p{page_index}.png", dpi=viz_dpi)
+        plt.show()
+        plt.close(fig)
+
+        # VIZ 6 (histograms)
+        fig = plt.figure(figsize=(16, 6), dpi=viz_dpi)
+        gs_row = [GridSpec(1, 4, figure=fig)[0, i] for i in range(4)]
+        all_polys = graph_polygons + dbscan_polygons
+        viz_histograms(fig, gs_row, all_polys, config)
+        if save_dir:
+            save_figure(fig, save_dir, f"viz6_histograms_p{page_index}.png", dpi=viz_dpi)
+        plt.show()
+        plt.close(fig)
+
+        doc.close()
 
     print(f"\n✅ Debug terminé. Ajustez les seuils dans config et relancez !")
     return all_components
@@ -744,6 +816,8 @@ if __name__ == "__main__":
     parser.add_argument("--min-area", type=float, default=None, help="Aire minimum")
     parser.add_argument("--thin-wire", type=float, default=None, help="Seuil fil fin")
     parser.add_argument("--busbar", type=float, default=None, help="Seuil busbar")
+    parser.add_argument("--split", action="store_true", help="Afficher les visualisations UNE PAR UNE (haute résolution)")
+    parser.add_argument("--viz-dpi", type=int, default=None, help="DPI pour l'affichage/sauvegarde des visualisations (ex: 200)")
 
     args = parser.parse_args()
 
@@ -764,5 +838,10 @@ if __name__ == "__main__":
         config.classifier.thin_wire_threshold = args.thin_wire
     if args.busbar is not None:
         config.classifier.busbar_threshold = args.busbar
+    # Visualization mode overrides
+    if args.split:
+        config._viz_split = True
+    if args.viz_dpi is not None:
+        config._viz_dpi = args.viz_dpi
 
     run_debug(args.pdf, args.page, config, args.save)
