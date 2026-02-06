@@ -6,17 +6,17 @@ import warnings
 from shapely.geometry import LineString, Polygon, Point
 from shapely.ops import polygonize, unary_union
 
-# Ignorer les avertissements géométriques mineurs
+# On ignore les warnings géométriques mineurs
 warnings.filterwarnings("ignore")
 
 def analyser_diagramme_final(pdf_path):
     print(f"--- Analyse de : {pdf_path} ---")
 
     # ==========================================
-    # 1. EXTRACTION DES DONNÉES (Lignes brutes)
+    # 1. EXTRACTION
     # ==========================================
     doc = fitz.open(pdf_path)
-    page = doc[0] # Première page
+    page = doc[0]
     paths = page.get_drawings()
     
     lignes_brutes = []
@@ -24,13 +24,10 @@ def analyser_diagramme_final(pdf_path):
     
     for path in paths:
         for item in path["items"]:
-            # Ligne ('l')
             if item[0] == "l":
                 lignes_brutes.append(LineString([item[1], item[2]]))
-            # Courbe ('c') - On la linéarise simplement par sa corde
             elif item[0] == "c":
                 lignes_brutes.append(LineString([item[1], item[-1]]))
-            # Rectangle natif ('re')
             elif item[0] == "re":
                 r = item[1]
                 p1, p2, p3, p4 = (r[0], r[1]), (r[2], r[1]), (r[2], r[3]), (r[0], r[3])
@@ -40,76 +37,63 @@ def analyser_diagramme_final(pdf_path):
                 ])
 
     # ==========================================
-    # 2. RECONSTRUCTION GÉOMÉTRIQUE
+    # 2. RECONSTRUCTION
     # ==========================================
-    print("Reconstruction des formes fermées...")
+    print("Reconstruction de la topologie...")
     try:
-        # unary_union : Coupe les lignes aux intersections et soude les bouts
         reseau = unary_union(lignes_brutes)
-        # polygonize : Trouve les cycles fermés
         polygones = list(polygonize(reseau))
     except Exception as e:
-        print(f"Erreur critique lors de la reconstruction : {e}")
+        print(f"Erreur critique : {e}")
         return
 
     print(f"--> {len(polygones)} formes détectées.")
 
     # ==========================================
-    # 3. ANALYSE ET CLASSIFICATION
+    # 3. CLASSIFICATION ET DESSIN
     # ==========================================
-    fig, ax = plt.subplots(figsize=(14, 14))
-    ax.set_title(f"Diagramme Reconstruit : {len(polygones)} objets")
+    fig, ax = plt.subplots(figsize=(16, 16)) # Grande image pour bien voir
+    ax.set_title(f"Diagramme Électrique : {len(polygones)} objets")
     
-    # Fond : Lignes brutes en gris très pâle
+    # Fond gris pâle
     for line in lignes_brutes:
         x, y = line.xy
         ax.plot(x, y, color='#f0f0f0', linewidth=0.5, zorder=0)
 
-    # Paramètres calibrés selon votre pic à 7.2px
-    SEUIL_EPAISSEUR_FIL = 8.0  # Tout ce qui est < 8px est suspecté d'être un fil
-    SEUIL_ELANCEMENT = 4.0     # Il faut être 4x plus long que large pour être un fil
+    # --- PARAMÈTRES (Ajustables) ---
+    SEUIL_FIL_FIN = 5.0      # En dessous de 5px = Fil commande (Jaune)
+    SEUIL_BUSBAR = 40.0      # Entre 5px et 40px = Busbar/Puissance (Vert Clair)
+                             # Au dessus de 40px = Vrai Composant (Vert Foncé)
 
-    compteurs = {"Objet": 0, "Fil": 0, "Groupe": 0, "Inconnu": 0}
+    compteurs = {"Fil": 0, "Busbar": 0, "Composant": 0, "Groupe": 0}
 
     for i, poly in enumerate(polygones):
         try:
-            # A. RÉPARATION TOPOLOGIQUE
-            # Répare les géométries invalides (auto-intersection, points de contact)
-            poly_clean = poly.buffer(0)
+            # A. NETTOYAGE
+            poly_clean = poly.buffer(0) # Répare les géométries
             
-            # B. MESURE DE L'ÉPAISSEUR (Pour détecter les fils)
+            # B. MESURE ÉPAISSEUR (Crucial pour fils vs composants)
             box_rot = poly_clean.minimum_rotated_rectangle
             if box_rot.is_empty: continue
             
             x, y = box_rot.exterior.coords.xy
-            # Calcul des longueurs des deux arêtes du rectangle orienté
             edge1 = Point(x[0], y[0]).distance(Point(x[1], y[1]))
             edge2 = Point(x[1], y[1]).distance(Point(x[2], y[2]))
             
             thickness = min(edge1, edge2)
             length = max(edge1, edge2)
             
-            # C. FILTRE "FIL DE FER"
-            is_wire = False
-            # Si c'est fin (<8px) ET élancé (Ratio > 4), c'est un fil
-            if thickness < SEUIL_EPAISSEUR_FIL and (length / thickness) > SEUIL_ELANCEMENT:
-                is_wire = True
-            # Sécurité pour les traits très fins (< 2px)
-            elif thickness < 2.0:
-                is_wire = True
-
-            # D. PRÉPARATION GEOMETRIE (Enveloppe vs Matière)
+            # C. CALCUL RATIOS
             poly_enveloppe = Polygon(poly_clean.exterior).simplify(0.5)
             poly_matiere = poly_clean.simplify(0.5)
 
-            # E. CALCUL DES RATIOS CLÉS
-            # G: Ratio Géométrique (Ressemblance Rectangle)
+            # G: Géométrie (Ressemblance Rectangle)
             box_env = poly_enveloppe.minimum_rotated_rectangle
             ratio_rect = 0
             if box_env.area > 0:
                 ratio_rect = poly_enveloppe.area / box_env.area
 
-            # D: Ratio Densité (Plein vs Vide)
+            # D: Densité (Plein vs Vide)
             ratio_densite = 1.0
             if poly_enveloppe.area > 0:
                 ratio_densite = poly_matiere.area / poly_enveloppe.area
@@ -120,119 +104,124 @@ def analyser_diagramme_final(pdf_path):
             if perimetre > 0:
                 circularity = (4 * math.pi * poly_enveloppe.area) / (perimetre ** 2)
 
-            # --- ARBRE DE DÉCISION ---
+            # --- ARBRE DE DÉCISION (LOGIQUE METIER) ---
+            
             label = ""
             label_debug = f"G:{ratio_rect:.2f}\nD:{ratio_densite:.2f}"
             couleur = "red"
             alpha_val = 0.5
             z_order = 2
-            style = "solid" # solid, dashed
-            
-            # 1. C'EST UN FIL (Priorité absolue)
-            if is_wire:
-                couleur = 'yellow'
-                label = "Fil"
-                alpha_val = 0.3
+            style = "solid"
+
+            # 1. FIL DE COMMANDE (Très fin)
+            if thickness < SEUIL_FIL_FIN:
+                couleur = '#FFD700' # Gold/Jaune
+                label = "Fil (Cmd)"
+                alpha_val = 0.4
                 z_order = 1
                 compteurs["Fil"] += 1
-
-            # 2. C'EST UN CERCLE
-            elif circularity > 0.88:
-                couleur = 'magenta'
-                label = "Cercle"
-                z_order = 3
-                compteurs["Objet"] += 1
-
-            # 3. C'EST UN RECTANGLE (ou quasi-rectangle)
-            # Seuil à 0.70 pour accepter les rectangles imparfaits
-            elif ratio_rect > 0.70:
-                
-                # Trie par densité
-                if ratio_densite > 0.80:
-                    couleur = 'green'     # OBJET PLEIN (Vert)
-                    label = "Objet"
-                    z_order = 3
-                    compteurs["Objet"] += 1
-                    
-                elif ratio_densite < 0.25:
-                    couleur = 'gray'      # ZONE VIDE / LAYOUT (Gris invisible)
+            
+            # 2. BUSBAR / CÂBLE PUISSANCE (Rectangle moyen et allongé)
+            # C'est ici que vos rectangles verts vont atterrir !
+            elif thickness < SEUIL_BUSBAR and ratio_rect > 0.75:
+                # On vérifie juste qu'il n'est pas "vide" (ce serait un cadre)
+                if ratio_densite > 0.5: 
+                    couleur = '#90EE90' # LightGreen (Vert Clair)
+                    label = "Busbar/Power"
+                    alpha_val = 0.6
+                    z_order = 1
+                    compteurs["Busbar"] += 1
+                else:
+                    couleur = 'gray' # Cadre vide fin
                     label = "Layout"
                     alpha_val = 0.05
                     z_order = 0
-                    
+
+            # 3. CERCLE (Composant type moteur/voyant)
+            elif circularity > 0.85:
+                couleur = 'magenta'
+                label = "Cercle"
+                z_order = 3
+                compteurs["Composant"] += 1
+
+            # 4. HEXAGONE
+            elif 0.70 <= ratio_rect <= 0.82 and circularity > 0.6:
+                couleur = 'orange'
+                label = "Symbole"
+                z_order = 3
+                compteurs["Composant"] += 1
+
+            # 5. GROS COMPOSANT RECTANGULAIRE (> 40px)
+            elif ratio_rect > 0.70:
+                if ratio_densite > 0.80:
+                    couleur = '#006400' # DarkGreen (Vert Foncé)
+                    label = "Composant"
+                    z_order = 3
+                    compteurs["Composant"] += 1
+                elif ratio_densite < 0.25:
+                    couleur = 'gray'
+                    label = "Layout"
+                    alpha_val = 0.05
+                    z_order = 0
                 else:
-                    couleur = 'blue'      # GROUPE / CONTENEUR (Bleu pointillé)
+                    couleur = 'blue' # Groupe/Conteneur
                     label = "Groupe"
-                    alpha_val = 0.1
                     style = "dashed"
+                    alpha_val = 0.1
                     z_order = 1
                     compteurs["Groupe"] += 1
 
-            # 4. C'EST UN HEXAGONE (Symbole)
-            elif 0.70 <= ratio_rect <= 0.82 and circularity > 0.6:
-                couleur = 'orange'
-                label = "Hexagone"
-                z_order = 3
-                compteurs["Objet"] += 1
-
-            # 5. C'EST UNE FORME COMPLEXE DENSE (Renegade L/Tri)
-            # G faible mais D forte -> C'est de la matière bizarre mais valide
-            elif 0.30 < ratio_rect <= 0.70 and ratio_densite > 0.75:
+            # 6. FORME COMPLEXE DENSE (L-Shape / Triangles)
+            elif ratio_densite > 0.75:
                 couleur = 'cyan'
-                label = "Forme L/Tri"
+                label = "Complexe"
                 z_order = 3
-                compteurs["Objet"] += 1
+                compteurs["Composant"] += 1
 
-            # 6. INCONNU / ERREUR
+            # 7. ERREUR / INCONNU
             else:
                 couleur = 'red'
                 label = "Inconnu"
                 alpha_val = 0.2
-                compteurs["Inconnu"] += 1
 
             # --- DESSIN ---
             
-            if label == "Fil":
-                # On dessine les fils en jaune discret
-                x, y = poly_matiere.exterior.xy
-                ax.fill(x, y, alpha=alpha_val, fc='yellow', ec='none', zorder=0)
-
-            elif label == "Groupe":
-                # Conteneur bleu pointillé
+            if label == "Groupe":
                 x, y = poly_enveloppe.exterior.xy
                 ax.plot(x, y, color='blue', linewidth=1, linestyle='--', zorder=z_order)
-                # Debug discret
-                cx, cy = poly_enveloppe.centroid.x, poly_enveloppe.centroid.y
-                if poly_enveloppe.area > 200:
-                    ax.text(cx, cy, label_debug, fontsize=6, color='blue', ha='center', alpha=0.7)
+                if poly_enveloppe.area > 300:
+                    cx, cy = poly_enveloppe.centroid.x, poly_enveloppe.centroid.y
+                    ax.text(cx, cy, "Groupe", fontsize=6, color='blue', ha='center', alpha=0.7)
 
             elif label == "Layout":
-                pass # On ne dessine pas les zones vides
+                pass 
 
             elif label != "Inconnu":
-                # Objets valides (Vert, Cyan, Orange, Magenta)
+                # Dessin standard (Fils, Busbars, Composants)
                 x, y = poly_matiere.exterior.xy
                 ax.fill(x, y, alpha=alpha_val, fc=couleur, ec='black', linewidth=0.5, zorder=z_order)
 
-            elif label == "Inconnu" and poly_enveloppe.area > 50:
-                # Erreurs rouges avec debug texte
-                x, y = poly_matiere.exterior.xy
-                ax.fill(x, y, alpha=alpha_val, fc='red', ec='red', linewidth=1, zorder=z_order)
-                cx, cy = poly_enveloppe.centroid.x, poly_enveloppe.centroid.y
-                ax.text(cx, cy, label_debug, fontsize=7, color='darkred', weight='bold', ha='center')
+            else:
+                # Erreurs (Rouge) avec debug
+                if poly_enveloppe.area > 50:
+                    x, y = poly_matiere.exterior.xy
+                    ax.fill(x, y, alpha=alpha_val, fc='red', ec='red', linewidth=1, zorder=z_order)
+                    cx, cy = poly_enveloppe.centroid.x, poly_enveloppe.centroid.y
+                    ax.text(cx, cy, label_debug, fontsize=7, color='darkred', weight='bold', ha='center')
 
         except Exception as e:
-            print(f"Erreur poly {i}: {e}")
             continue
 
-    # Légende et affichage
+    # Légende
     patches = [
-        mpatches.Patch(color='green', alpha=0.5, label='Objet Rect (G>0.7, D>0.8)'),
-        mpatches.Patch(color='cyan', alpha=0.5, label='Objet L/Tri (G<0.7, D>0.75)'),
-        mpatches.Patch(color='orange', alpha=0.5, label='Hexagone'),
-        mpatches.Patch(color='blue', alpha=0.2, linestyle='--', label='Groupe (Conteneur)'),
-        mpatches.Patch(color='yellow', alpha=0.5, label=f'Fil (<{SEUIL_EPAISSEUR_FIL}px)'),
-        mpatches.Patch(color='red', alpha=0.5, label='Inconnu (Erreur)')
+        mpatches.Patch(color='#FFD700', label=f'Fil Cmd (<{SEUIL_FIL_FIN}px)'),
+        mpatches.Patch(color='#90EE90', label=f'Busbar/Power (<{SEUIL_BUSBAR}px)'),
+        mpatches.Patch(color='#006400', label='Composant Rect (>40px)'),
+        mpatches.Patch(color='cyan', label='Composant Complexe'),
+        mpatches.Patch(color='magenta', label='Cercle'),
+        mpatches.Patch(color='orange', label='Hexagone'),
+        mpatches.Patch(color='blue', alpha=0.3, linestyle='--', label='Groupe'),
+        mpatches.Patch(color='red', label='Inconnu')
     ]
     ax.legend(handles=patches, loc='upper right')
     
@@ -241,5 +230,5 @@ def analyser_diagramme_final(pdf_path):
     print(f"Terminé. Stats : {compteurs}")
     plt.show()
 
-# Lancer le script
+# Remplacer par votre fichier
 analyser_diagramme_final("mon_fichier.pdf")
