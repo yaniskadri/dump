@@ -1,115 +1,78 @@
-for i, poly in enumerate(polygones):
-        try:
-            # 1. RÉPARATION TOPOLOGIQUE (Fix "touching at a point")
-            # buffer(0) répare les auto-intersections et les points de contact invalides
-            poly_clean = poly.buffer(0)
+import fitz
+from shapely.geometry import LineString, Polygon
+from shapely.ops import polygonize, unary_union
+import collections
+
+def diagnostic_epaisseurs(pdf_path):
+    # 1. Extraction (Classique)
+    doc = fitz.open(pdf_path)
+    page = doc[0]
+    paths = page.get_drawings()
+    
+    lignes_brutes = []
+    for path in paths:
+        for item in path["items"]:
+            if item[0] == "l":
+                lignes_brutes.append(LineString([item[1], item[2]]))
+            elif item[0] == "c":
+                lignes_brutes.append(LineString([item[1], item[-1]]))
+            elif item[0] == "re":
+                r = item[1]
+                p1, p2, p3, p4 = (r[0], r[1]), (r[2], r[1]), (r[2], r[3]), (r[0], r[3])
+                lignes_brutes.extend([LineString([p1,p2]), LineString([p2,p3]), LineString([p3,p4]), LineString([p4,p1])])
+
+    # 2. Reconstruction
+    reseau = unary_union(lignes_brutes)
+    polygones = list(polygonize(reseau))
+    
+    # 3. MESURE PRÉCISE DES ÉPAISSEURS
+    epaisseurs = []
+    
+    print(f"Analyse de {len(polygones)} objets fermés...")
+    
+    for poly in polygones:
+        # On nettoie la géométrie
+        p = poly.buffer(0)
+        
+        # On calcule le rectangle orienté le plus serré (Rotated Rectangle)
+        box = p.minimum_rotated_rectangle
+        
+        if box.is_empty: continue
+        
+        # On extrait les 4 coins du rectangle orienté
+        x, y = box.exterior.coords.xy
+        p0, p1, p2 = (x[0], y[0]), (x[1], y[1]), (x[2], y[2])
+        
+        # Calcul des deux côtés adjacents (Pythagore)
+        cote_1 = ((p0[0]-p1[0])**2 + (p0[1]-p1[1])**2)**0.5
+        cote_2 = ((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)**0.5
+        
+        # L'épaisseur est TOUJOURS le plus petit côté
+        thickness = min(cote_1, cote_2)
+        
+        # On arrondit à 2 décimales pour grouper les valeurs proches
+        epaisseurs.append(round(thickness, 3))
+
+    # 4. STATISTIQUES
+    compteur = collections.Counter(epaisseurs)
+    
+    print("\n=== DISTRIBUTION DES ÉPAISSEURS (Histogramme) ===")
+    print("Épaisseur (px)  |  Nombre d'objets  |  Interprétation probable")
+    print("-" * 60)
+    
+    # On trie par épaisseur croissante
+    sorted_stats = sorted(compteur.items())
+    
+    for ep, count in sorted_stats:
+        # On ignore les tout petits bruits (< 0.01)
+        if ep < 0.01: continue
+        
+        barre = "*" * (count // 2) # Visualisation ascii
+        note = ""
+        
+        if count > len(polygones) * 0.1: # Si c'est fréquent
+            note = "<-- PIC MAJEUR"
             
-            # 2. CALCUL DE LA BOÎTE (Pour mesurer l'épaisseur)
-            box = poly_clean.minimum_rotated_rectangle
-            
-            if box.is_empty: continue
-            
-            # On récupère les coordonnées pour calculer largeur/hauteur
-            x, y = box.exterior.coords.xy
-            # Astuce pour avoir longueur et largeur du rectangle orienté
-            edge_length = (Point(x[0], y[0]).distance(Point(x[1], y[1])), 
-                           Point(x[1], y[1]).distance(Point(x[2], y[2])))
-            width = min(edge_length)
-            length = max(edge_length)
-            
-            # 3. FILTRE "FIL DE FER" (WIRE DETECTOR)
-            # Si l'objet est très fin (ex: épaisseur < 3 unités) OU très élancé (Ratio > 1:20)
-            # Alors c'est un FIL -> On l'ignore ou on le grise.
-            is_wire = False
-            if width < 3.0 or (length > 0 and width/length < 0.05):
-                is_wire = True
+        print(f"{ep:.3f}           |  {count:3d} {barre} {note}")
 
-            # 4. PRÉPARATION ANALYSE (Sur la forme réparée)
-            poly_enveloppe = Polygon(poly_clean.exterior).simplify(0.5)
-            poly_matiere = poly_clean.simplify(0.5)
-
-            # 5. CALCULS DES RATIOS
-            # G (Géométrie)
-            box_env = poly_enveloppe.minimum_rotated_rectangle
-            ratio_rect = 0
-            if box_env.area > 0:
-                ratio_rect = poly_enveloppe.area / box_env.area
-
-            # D (Densité)
-            ratio_densite = 1.0
-            if poly_enveloppe.area > 0:
-                ratio_densite = poly_matiere.area / poly_enveloppe.area
-            
-            # Label de debug
-            label_debug = f"G:{ratio_rect:.2f} D:{ratio_densite:.2f}"
-
-            # --- ARBRE DE DÉCISION ---
-            label = ""
-            is_valid = False
-            z_order = 2
-            alpha_val = 0.5
-            
-            # A. C'EST UN FIL (Nouveau !)
-            if is_wire:
-                couleur = 'yellow' # Ou 'none' si vous voulez les cacher
-                label = "Fil"
-                alpha_val = 0.3
-                z_order = 0 # Au fond
-                # On le marque comme traité pour ne pas qu'il finisse en rouge
-                
-            # B. OBJET VALIDE (Vert / Cyan / Orange)
-            elif ratio_rect > 0.70: # Seuil tolérant
-                is_valid = True
-                
-                # Vérif densité
-                if ratio_densite > 0.85:
-                    couleur = 'green'    # Objet Plein
-                    label = "Objet"
-                elif ratio_densite < 0.25:
-                    couleur = 'gray'     # Layout vide
-                    label = "Layout"
-                    alpha_val = 0.05
-                    z_order = 0
-                else:
-                    couleur = 'blue'     # Groupe
-                    label = "Groupe"
-                    alpha_val = 0.1
-                    z_order = 1
-
-            # C. TRIANGLE / FORME EN L (Votre Rénégat dense)
-            elif 0.40 < ratio_rect < 0.70 and ratio_densite > 0.80:
-                couleur = 'cyan'
-                label = "Forme L/Tri"
-                is_valid = True
-
-            # D. ERREUR
-            else:
-                couleur = 'red'
-                label = "Inconnu"
-                alpha_val = 0.2
-
-            # --- DESSIN ---
-            if label == "Fil":
-                # On dessine les fils en jaune discret (ou on met 'pass' pour les cacher)
-                x, y = poly_matiere.exterior.xy
-                ax.fill(x, y, alpha=0.3, fc='yellow', ec='none', zorder=0)
-            
-            elif label == "Groupe":
-                x, y = poly_enveloppe.exterior.xy
-                ax.plot(x, y, color='blue', linewidth=1, linestyle='--', zorder=z_order)
-                # Debug texte
-                cx, cy = poly_enveloppe.centroid.x, poly_enveloppe.centroid.y
-                ax.text(cx, cy, label_debug, fontsize=6, color='blue', ha='center')
-
-            elif is_valid and label != "Layout":
-                x, y = poly_matiere.exterior.xy
-                ax.fill(x, y, alpha=alpha_val, fc=couleur, ec='black', linewidth=0.5, zorder=z_order)
-
-            elif couleur == 'red' and poly_enveloppe.area > 50:
-                x, y = poly_matiere.exterior.xy
-                ax.fill(x, y, alpha=alpha_val, fc='red', ec='red', linewidth=1, zorder=z_order)
-                cx, cy = poly_enveloppe.centroid.x, poly_enveloppe.centroid.y
-                ax.text(cx, cy, label_debug, fontsize=7, color='darkred', weight='bold', ha='center')
-
-        except Exception as e:
-            continue
+diagnostic_epaisseurs("mon_fichier.pdf")
