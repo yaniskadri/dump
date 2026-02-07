@@ -68,3 +68,5 @@ print("has as_linestring:", hasattr(seg0, "as_linestring"))
 print("as_linestring attr:", seg0.as_linestring)
 print("callable:", callable(seg0.as_linestring))
 print("coords:", seg0.x1, seg0.y1, seg0.x2, seg0.y2)
+
+return LineString([(seg.x1, seg.y1), (seg.x2, seg.y2)])
