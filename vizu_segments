@@ -31,3 +31,32 @@ def draw_segments_matplotlib(segments, linewidth=0.5, invert_y=True):
         ax.invert_yaxis()  # cohérent avec coordonnées PDF
 
     plt.show()
+
+
+import matplotlib.pyplot as plt
+
+def draw_polygons(polygons, linewidth=0.8, invert_y=True):
+    plt.figure()
+
+    xs_all = []
+    ys_all = []
+
+    for poly in polygons:
+        x, y = poly.exterior.xy  # contour extérieur
+
+        plt.plot(x, y, linewidth=linewidth)
+
+        xs_all.extend(x)
+        ys_all.extend(y)
+
+    ax = plt.gca()
+    ax.set_aspect("equal", adjustable="box")
+
+    if xs_all and ys_all:
+        ax.set_xlim(min(xs_all), max(xs_all))
+        ax.set_ylim(min(ys_all), max(ys_all))
+
+    if invert_y:
+        ax.invert_yaxis()
+
+    plt.show()
