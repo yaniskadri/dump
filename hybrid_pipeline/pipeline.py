@@ -18,13 +18,14 @@ Usage:
 
 import fitz
 import os
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, box as shp_box
+from shapely.ops import unary_union
 
 from .config import PipelineConfig
 from .vector_utils import extract_segments_from_page, extract_text_blocks
 from .graph_extractor import run_graph_extraction
 from .dbscan_extractor import run_dbscan_extraction
-from .classifier import classify_all, DetectedComponent
+from .classifier import classify_all, classify_polygon, compute_metrics, DetectedComponent
 from .exporter import (
     render_page_image,
     export_crops,
@@ -61,6 +62,126 @@ def compute_containment(inner: Polygon, outer: Polygon) -> float:
         return inter / inner.area
     except Exception:
         return 0.0
+
+
+def proximity_merge_components(
+    components: list[DetectedComponent],
+    radius: float = 8.0,
+) -> list[DetectedComponent]:
+    """
+    Fusionne les composants proches en un seul (bounding box englobante).
+    
+    Cas d'usage principal : un cercle (Graph) connecté à un symbole de terre
+    (DBSCAN) forment ensemble un seul composant électrique.
+    
+    Algorithme :
+      1. Pour chaque composant, créer un buffer de `radius` pts.
+      2. Si deux composants (Graph+DBSCAN ou DBSCAN+DBSCAN) se touchent
+         après buffer ET au moins un est "petit" (Open_Component ou Circle),
+         les fusionner en un seul composant avec bbox englobante.
+      3. N'absorbe pas les gros composants rectangulaires.
+    
+    On ne fusionne PAS deux Graph rectangles — le smart_merge s'en occupe.
+    """
+    if len(components) <= 1:
+        return components
+
+    n = len(components)
+    # Union-Find
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    # Categories that can participate in proximity merge
+    mergeable_cats = {
+        "Open_Component", "Circle_Component", "Unknown_Shape", "Hex_Symbol",
+    }
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            ci, cj = components[i], components[j]
+
+            # At least one component must be small/open/circle
+            i_mergeable = ci.category in mergeable_cats
+            j_mergeable = cj.category in mergeable_cats
+            if not (i_mergeable or j_mergeable):
+                continue
+
+            # Don't merge two large Graph rectangles
+            if (ci.source == "graph" and cj.source == "graph"
+                    and ci.category == "Component_Rect"
+                    and cj.category == "Component_Rect"):
+                continue
+
+            # Check proximity: buffer the smaller polygon
+            try:
+                if ci.polygon.buffer(radius).intersects(cj.polygon):
+                    # Don't merge if both are big (area > 2000)
+                    if ci.polygon.area > 2000 and cj.polygon.area > 2000:
+                        if not i_mergeable and not j_mergeable:
+                            continue
+                    union(i, j)
+            except Exception:
+                continue
+
+    # Group by root
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        root = find(i)
+        groups.setdefault(root, []).append(i)
+
+    result = []
+    for indices in groups.values():
+        if len(indices) == 1:
+            result.append(components[indices[0]])
+            continue
+
+        # Merge all polygons in the group into a bounding box
+        group_comps = [components[i] for i in indices]
+        all_x1 = min(c.bbox[0] for c in group_comps)
+        all_y1 = min(c.bbox[1] for c in group_comps)
+        all_x2 = max(c.bbox[2] for c in group_comps)
+        all_y2 = max(c.bbox[3] for c in group_comps)
+
+        merged_poly = shp_box(all_x1, all_y1, all_x2, all_y2)
+
+        # Pick the "best" category from the group
+        # Priority: Component_Rect > Circle_Component > Hex_Symbol > Open_Component > Unknown
+        cat_priority = {
+            "Component_Rect": 6, "Component_Complex": 5,
+            "Circle_Component": 4, "Hex_Symbol": 3,
+            "Busbar_Power": 2, "Open_Component": 1,
+            "Group_Container": 0, "Unknown_Shape": -1,
+        }
+        best_comp = max(group_comps, key=lambda c: cat_priority.get(c.category, -2))
+
+        # Reclassify if merged shape is significantly different
+        merged_m = compute_metrics(merged_poly)
+
+        merged_component = DetectedComponent(
+            id=best_comp.id,
+            category=best_comp.category,
+            bbox=(all_x1, all_y1, all_x2, all_y2),
+            polygon=merged_poly,
+            source="merged",
+            thickness=merged_m["thickness"],
+            circularity=merged_m["circularity"],
+            g_ratio=merged_m["g_ratio"],
+            d_ratio=merged_m["d_ratio"],
+            page_index=best_comp.page_index,
+        )
+        result.append(merged_component)
+
+    return result
 
 
 def post_classification_cleanup(
@@ -231,6 +352,14 @@ class HybridPipeline:
             graph_components,
             dbscan_components,
             self.config.dedup_iou_threshold,
+        )
+
+        # ── 5b. PROXIMITY MERGE (Graph ↔ DBSCAN grouping) ──
+        # Groups nearby components that form a single electrical symbol
+        # (e.g., circle + ground, arrow + ground, etc.)
+        all_components = proximity_merge_components(
+            all_components,
+            radius=self.config.proximity_merge_radius,
         )
 
         # ── 6. POST-CLASSIFICATION CLEANUP ──

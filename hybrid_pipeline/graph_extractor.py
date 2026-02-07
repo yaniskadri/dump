@@ -128,7 +128,22 @@ def filter_by_node_degree(
         # des groupes de sous-faces). Rejeter uniquement les
         # petites faces bruiteuses.
         if face.area < cls_config.min_area:
-            continue
+            # Exception: keep small faces if they are very compact (circles).
+            # Small circles (grounds, connectors) can have area < min_area
+            # but are still valid components.
+            try:
+                import math
+                perim = face.length
+                if perim > 0:
+                    circ = (4 * math.pi * face.area) / (perim ** 2)
+                    if circ > 0.65 and face.area > 20:  # Compact + not noise
+                        pass  # Keep it — small circle/ellipse
+                    else:
+                        continue
+                else:
+                    continue
+            except Exception:
+                continue
 
         if not face.is_valid:
             face = face.buffer(0)
@@ -159,6 +174,19 @@ def filter_by_node_degree(
             if is_big and has_low_degree_corners and ratio < 0.85:
                 kept.append(face)
             else:
+                # Also keep compact shapes (circles) even at crossings.
+                # A circle at a wire junction has high-degree nodes but
+                # its circularity distinguishes it from a wire artifact.
+                try:
+                    import math
+                    perim = face.length
+                    if perim > 0:
+                        circ = (4 * math.pi * face.area) / (perim ** 2)
+                        if circ > 0.55:  # Compact enough to be a real shape
+                            kept.append(face)
+                            continue
+                except Exception:
+                    pass
                 rejected.append(face)
         else:
             kept.append(face)

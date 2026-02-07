@@ -71,6 +71,12 @@ class ClassifierConfig:
     # Épaisseur max pour un busbar. Au-dessus → vrai composant.
     busbar_threshold: float = 40.0
 
+    # Épaisseur MINIMALE pour un busbar (en points PDF).
+    # Les intersections de fils créent des petits rectangles (~3-8pt)
+    # parfaitement rectangulaires et denses — sans ce seuil ils sont
+    # classés Busbar_Power. Au-dessous → rejeté ou Unknown.
+    min_busbar_thickness: float = 10.0
+
     # Aire min/max d'un polygone pour être considéré (en points PDF²).
     min_area: float = 80.0
     max_area: float = 150000.0
@@ -133,3 +139,8 @@ class PipelineConfig:
 
     # Ratio de chevauchement min pour fusionner deux composants DBSCAN.
     dbscan_overlap_merge_ratio: float = 0.5
+
+    # ── Proximity merge (Graph ↔ DBSCAN grouping) ──
+    # Distance max (pts PDF) pour grouper un composant Graph avec un
+    # composant DBSCAN adjacent (ex: cercle + symbole de terre attaché).
+    proximity_merge_radius: float = 8.0

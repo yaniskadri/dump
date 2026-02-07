@@ -168,7 +168,20 @@ def classify_polygon(
     # 4. Formes rectangulaires
     if g_ratio > config.rect_ratio_threshold:
         if thickness < config.busbar_threshold:
-            # Busbar ou layout line
+            # ── Busbar candidate ──
+            # Guard: wire crossings create tiny perfect rectangles (3-8pt).
+            # A real busbar has meaningful thickness (≥ min_busbar_thickness).
+            if thickness < config.min_busbar_thickness:
+                # Too thin for a busbar — check if it's just a wire crossing.
+                # Wire crossings are small, dense, very rectangular squares.
+                area = poly.buffer(0).area
+                if area < 400:  # Small rectangles at wire crossings
+                    return None  # Wire crossing artifact
+                # Larger thin rectangles could be real thin components
+                if d_ratio > config.density_busbar_min:
+                    return "Unknown_Shape"  # Not confident enough for Busbar
+                else:
+                    return None
             if d_ratio > config.density_busbar_min:
                 return "Busbar_Power"
             else:

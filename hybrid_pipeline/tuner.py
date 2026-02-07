@@ -268,6 +268,9 @@ def build_config_from_trial(trial: optuna.Trial) -> PipelineConfig:
     config.classifier.busbar_threshold = trial.suggest_float(
         "cls.busbar_threshold", 20.0, 80.0, step=5.0,
     )
+    config.classifier.min_busbar_thickness = trial.suggest_float(
+        "cls.min_busbar_thickness", 5.0, 20.0, step=1.0,
+    )
     config.classifier.min_area = trial.suggest_float(
         "cls.min_area", 30.0, 200.0, step=10.0,
     )
@@ -296,6 +299,9 @@ def build_config_from_trial(trial: optuna.Trial) -> PipelineConfig:
     )
     config.containment_threshold = trial.suggest_float(
         "containment_threshold", 0.6, 0.95, step=0.05,
+    )
+    config.proximity_merge_radius = trial.suggest_float(
+        "proximity_merge_radius", 3.0, 20.0, step=1.0,
     )
 
     return config
@@ -443,6 +449,7 @@ class PipelineTuner:
                 "dbscan.min_cluster_size": 8.0,
                 "cls.thin_wire_threshold": 5.0,
                 "cls.busbar_threshold": 40.0,
+                "cls.min_busbar_thickness": 10.0,
                 "cls.min_area": 80.0,
                 "cls.rect_ratio_threshold": 0.70,
                 "cls.circle_threshold": 0.85,
@@ -452,6 +459,7 @@ class PipelineTuner:
                 "cls.aspect_ratio_max_thickness": 15.0,
                 "dedup_iou_threshold": 0.3,
                 "containment_threshold": 0.8,
+                "proximity_merge_radius": 8.0,
             }
         )
 
@@ -497,6 +505,7 @@ class PipelineTuner:
 
         config.classifier.thin_wire_threshold = params["cls.thin_wire_threshold"]
         config.classifier.busbar_threshold = params["cls.busbar_threshold"]
+        config.classifier.min_busbar_thickness = params["cls.min_busbar_thickness"]
         config.classifier.min_area = params["cls.min_area"]
         config.classifier.rect_ratio_threshold = params["cls.rect_ratio_threshold"]
         config.classifier.circle_threshold = params["cls.circle_threshold"]
@@ -507,6 +516,8 @@ class PipelineTuner:
 
         config.dedup_iou_threshold = params["dedup_iou_threshold"]
         config.containment_threshold = params["containment_threshold"]
+        if "proximity_merge_radius" in params:
+            config.proximity_merge_radius = params["proximity_merge_radius"]
 
         return config
 
@@ -540,6 +551,7 @@ class PipelineTuner:
             "classifier": {
                 "thin_wire_threshold": config.classifier.thin_wire_threshold,
                 "busbar_threshold": config.classifier.busbar_threshold,
+                "min_busbar_thickness": config.classifier.min_busbar_thickness,
                 "min_area": config.classifier.min_area,
                 "max_area": config.classifier.max_area,
                 "rect_ratio_threshold": config.classifier.rect_ratio_threshold,
@@ -552,6 +564,7 @@ class PipelineTuner:
             },
             "dedup_iou_threshold": config.dedup_iou_threshold,
             "containment_threshold": config.containment_threshold,
+            "proximity_merge_radius": config.proximity_merge_radius,
         }
 
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -583,6 +596,8 @@ class PipelineTuner:
             config.dedup_iou_threshold = data["dedup_iou_threshold"]
         if "containment_threshold" in data:
             config.containment_threshold = data["containment_threshold"]
+        if "proximity_merge_radius" in data:
+            config.proximity_merge_radius = data["proximity_merge_radius"]
 
         return config
 
@@ -773,12 +788,12 @@ class AutoCalibrator:
     automatiquement la configuration.
     
     Idéal pour les nouveaux constructeurs : on lance une fois et ça
-    converge vers la bonne config sans intervention manuelle.
+    converge vers laff bonne config sans intervention manuelle.
     
     Stratégie en 2 phases :
       Phase 1 — Diagnostic rapide (3-5 itérations) :
         Analyse les symptômes → applique des corrections ciblées.
-        Converge vite vers une config "pas loin".
+        Converge vite vers une config "pfas loin".
       Phase 2 — Fine-tuning Optuna (optionnel) :
         Affine les paramètres autour de la zone trouvée en phase 1.
     
