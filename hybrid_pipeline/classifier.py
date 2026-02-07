@@ -139,6 +139,23 @@ def classify_polygon(
     if thickness < config.thin_wire_threshold:
         return None
 
+    # 1b. Fils allongés → rejet par aspect ratio
+    #     Même si l'épaisseur est > thin_wire, une forme très allongée
+    #     et mince est un fil (ex: un segment de busbar mal polygonisé).
+    if thickness < config.aspect_ratio_max_thickness and thickness > 0:
+        box_rot = poly.buffer(0).minimum_rotated_rectangle
+        if not box_rot.is_empty:
+            bx, by = box_rot.exterior.coords.xy
+            from shapely.geometry import Point as _Pt
+            e1 = _Pt(bx[0], by[0]).distance(_Pt(bx[1], by[1]))
+            e2 = _Pt(bx[1], by[1]).distance(_Pt(bx[2], by[2]))
+            long_side = max(e1, e2)
+            short_side = min(e1, e2)
+            if short_side > 0:
+                aspect = long_side / short_side
+                if aspect > config.max_aspect_ratio:
+                    return None  # Trop allongé → fil
+
     # 2. Cercles
     if circ > config.circle_threshold:
         return "Circle_Component"

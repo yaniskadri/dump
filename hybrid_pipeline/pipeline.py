@@ -47,6 +47,90 @@ def compute_iou(poly_a: Polygon, poly_b: Polygon) -> float:
         return 0.0
 
 
+def compute_containment(inner: Polygon, outer: Polygon) -> float:
+    """
+    Calcule le ratio de 'inner' contenu dans 'outer'.
+    Returns: fraction de l'aire de inner qui est dans outer (0.0 à 1.0).
+    """
+    try:
+        if inner.area <= 0:
+            return 0.0
+        if not inner.intersects(outer):
+            return 0.0
+        inter = inner.intersection(outer).area
+        return inter / inner.area
+    except Exception:
+        return 0.0
+
+
+def post_classification_cleanup(
+    components: list[DetectedComponent],
+    containment_threshold: float = 0.8,
+) -> list[DetectedComponent]:
+    """
+    Nettoyage post-classification pour corriger les erreurs résiduelles.
+    
+    Règles appliquées :
+      1. Containment : si un composant est contenu à > seuil dans un autre
+         plus grand, supprimer le plus petit (il fait partie du grand).
+      2. Wire-in-component : si un composant allongé (aspect ratio élevé)
+         est partiellement dans un composant rectangulaire, le supprimer.
+      3. Duplicate grounds : si deux composants de même catégorie se
+         chevauchent fortement (IoU > 0.5), garder le mieux scoré.
+    """
+    if len(components) <= 1:
+        return components
+
+    to_remove = set()
+
+    # Trier par aire décroissante (les gros composants ont priorité)
+    sorted_comps = sorted(components, key=lambda c: c.polygon.area, reverse=True)
+
+    for i in range(len(sorted_comps)):
+        if i in to_remove:
+            continue
+        for j in range(i + 1, len(sorted_comps)):
+            if j in to_remove:
+                continue
+
+            big = sorted_comps[i]
+            small = sorted_comps[j]
+
+            # Règle 1 : Containment — le petit est "avalé" par le grand
+            cont = compute_containment(small.polygon, big.polygon)
+            if cont > containment_threshold:
+                # Le petit est presque entièrement dans le grand → supprimer le petit
+                to_remove.add(j)
+                continue
+
+            # Règle 2 : Forte IoU entre deux composants de même catégorie
+            iou = compute_iou(big.polygon, small.polygon)
+            if iou > 0.5 and big.category == small.category:
+                # Doublon probable → garder le plus grand
+                to_remove.add(j)
+                continue
+
+            # Règle 3 : Composant fin qui chevauche un composant normal
+            #   (ex: un fil polygonisé qui traverse un composant)
+            if small.thickness > 0 and small.g_ratio > 0:
+                box_rot = small.polygon.buffer(0).minimum_rotated_rectangle
+                if not box_rot.is_empty:
+                    bx, by = box_rot.exterior.coords.xy
+                    from shapely.geometry import Point as _Pt
+                    e1 = _Pt(bx[0], by[0]).distance(_Pt(bx[1], by[1]))
+                    e2 = _Pt(bx[1], by[1]).distance(_Pt(bx[2], by[2]))
+                    long_s = max(e1, e2)
+                    short_s = min(e1, e2)
+                    if short_s > 0 and long_s / short_s > 6.0:
+                        # Forme très allongée qui chevauche un composant → fil
+                        if cont > 0.3:
+                            to_remove.add(j)
+
+    # Reconstruire la liste sans les éléments supprimés
+    cleaned = [c for idx, c in enumerate(sorted_comps) if idx not in to_remove]
+    return cleaned
+
+
 def deduplicate(
     graph_components: list[DetectedComponent],
     dbscan_components: list[DetectedComponent],
@@ -147,6 +231,12 @@ class HybridPipeline:
             graph_components,
             dbscan_components,
             self.config.dedup_iou_threshold,
+        )
+
+        # ── 6. POST-CLASSIFICATION CLEANUP ──
+        all_components = post_classification_cleanup(
+            all_components,
+            self.config.containment_threshold,
         )
 
         return all_components

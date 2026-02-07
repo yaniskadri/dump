@@ -186,6 +186,98 @@ def filter_isolated_empty(
     return valid
 
 
+def smart_merge_faces(
+    faces: list[Polygon],
+    config: GraphConfig,
+) -> list[Polygon]:
+    """
+    Regroupe les sous-faces qui font partie d'un même composant,
+    SANS fusionner deux composants distincts qui se touchent simplement.
+
+    Stratégie :
+      - Deux faces sont fusionnables si elles partagent un bord (touchent)
+        ET que l'aire combinée ne dépasse pas un seuil raisonnable.
+      - On utilise un Union-Find pour regrouper les faces apparentées.
+      - Au sein d'un groupe, on fait unary_union pour reconstruire
+        le composant complet (ex: L-shape = 2 rectangles fusionnés).
+
+    Cela évite le problème du unary_union aveugle qui fusionnait
+    deux symboles de terre adjacents en un seul blob.
+    """
+    if not faces:
+        return []
+
+    n = len(faces)
+    if n == 1:
+        return faces
+
+    # Union-Find
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    # Calculer les aires individuelles
+    areas = [f.area for f in faces]
+
+    # Construire les groupes : fusionner seulement les faces qui
+    # partagent un bord ET dont la combinaison reste raisonnable.
+    tol = config.merge_neighbor_tolerance
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Test de contact : les faces se touchent ou se chevauchent légèrement
+            try:
+                if not faces[i].buffer(tol).intersects(faces[j]):
+                    continue
+            except Exception:
+                continue
+
+            # Test d'aire combinée : ne pas fusionner si le résultat est trop gros
+            combined_area = areas[i] + areas[j]
+            if combined_area > config.merge_max_combined_area:
+                continue
+
+            # Test de croissance d'aire : vérifier que le merge ne crée pas
+            # un gros trou vide entre les deux faces
+            try:
+                merged = unary_union([faces[i], faces[j]])
+                if merged.area > combined_area * config.merge_max_area_growth:
+                    continue
+            except Exception:
+                continue
+
+            union(i, j)
+
+    # Regrouper par composant
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        root = find(i)
+        groups.setdefault(root, []).append(i)
+
+    # Fusionner au sein de chaque groupe
+    result = []
+    for indices in groups.values():
+        if len(indices) == 1:
+            result.append(faces[indices[0]])
+        else:
+            group_polys = [faces[i] for i in indices]
+            merged = unary_union(group_polys)
+            if merged.geom_type == "Polygon":
+                result.append(merged)
+            elif merged.geom_type == "MultiPolygon":
+                result.extend(list(merged.geoms))
+
+    return result
+
+
 def run_graph_extraction(
     segments: list[VectorSegment],
     text_bboxes: list[tuple],
@@ -200,6 +292,7 @@ def run_graph_extraction(
       2. build_graph → degrés des nœuds
       3. Node Degree Filter → rejeter les croisements de fils
       4. Filtre Vide & Solitaire → rejeter les faces sans contenu
+      5. Smart Merge → regrouper les sous-faces d'un même composant
     
     Returns:
         Liste de Polygones Shapely représentant les composants fermés détectés.
@@ -225,15 +318,10 @@ def run_graph_extraction(
     # 4. Filtre Vide & Solitaire
     filtered = filter_isolated_empty(candidates, text_bboxes)
 
-    # 5. Fusion des polygones qui se chevauchent
+    # 5. Smart Merge (remplace l'ancien unary_union aveugle)
     if not filtered:
         return []
 
-    merged = unary_union(filtered)
-    result = []
-    if merged.geom_type == "Polygon":
-        result.append(merged)
-    elif merged.geom_type == "MultiPolygon":
-        result.extend(list(merged.geoms))
+    result = smart_merge_faces(filtered, graph_config)
 
     return result

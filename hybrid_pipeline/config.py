@@ -22,6 +22,19 @@ class GraphConfig:
     # Nombre minimum de nœuds pour qu'un cycle soit considéré.
     min_cycle_nodes: int = 3
 
+    # ── Smart Merge (remplacement de unary_union aveugle) ──
+    # Distance max entre deux faces pour les considérer comme voisines
+    # d'un même composant (en points PDF).
+    merge_neighbor_tolerance: float = 1.0
+
+    # Aire max combinée autorisée pour un merge (évite de fusionner
+    # deux composants distincts qui se touchent).
+    merge_max_combined_area: float = 3000.0
+
+    # Ratio max entre l'aire combinée et la somme des aires individuelles.
+    # Un ratio élevé signifie que le merge ajoute beaucoup de "vide" → rejet.
+    merge_max_area_growth: float = 1.5
+
 
 @dataclass
 class DBSCANConfig:
@@ -75,6 +88,15 @@ class ClassifierConfig:
     # Aire min pour garder un "Unknown"
     unknown_min_area: float = 200.0
 
+    # ── Filtre aspect ratio (rejet des fils allongés) ──
+    # Ratio d'aspect max (longueur / épaisseur) pour qu'une face
+    # soit considérée comme composant. Au-delà → fil ou wire → rejeté.
+    max_aspect_ratio: float = 8.0
+
+    # Épaisseur max pour appliquer le filtre aspect ratio.
+    # Au-dessus de cette épaisseur, on ne rejette pas (gros busbar).
+    aspect_ratio_max_thickness: float = 15.0
+
 
 @dataclass
 class ExportConfig:
@@ -97,3 +119,11 @@ class PipelineConfig:
 
     # Seuil IoU pour dédupliquer les détections Graph vs DBSCAN.
     dedup_iou_threshold: float = 0.3
+
+    # ── Post-classification cleanup ──
+    # Seuil de containment : si un composant est contenu à ce ratio
+    # dans un autre, le plus petit est supprimé.
+    containment_threshold: float = 0.8
+
+    # Ratio de chevauchement min pour fusionner deux composants DBSCAN.
+    dbscan_overlap_merge_ratio: float = 0.5
