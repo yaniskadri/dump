@@ -31,3 +31,7 @@ torch.version.cuda ne doit pas être None
 import torch
 print(f"Total VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
 print(f"Current Usage: {torch.cuda.memory_allocated(0) / 1e9:.2f} GB")
+
+curl -L -o sam_vit_b_01ec64.pth https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
+curl -L -o sam_vit_l_0b3195.pth https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth
+s
