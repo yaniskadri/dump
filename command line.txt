@@ -38,3 +38,4 @@ s
 
 mkdir -Force data\weights
 curl -L -o data\weights\sam_vit_b_01ec64.pth https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
+curl -L -o sam_hq2_base.pt https://huggingface.co/syscv-community/sam-hq2/resolve/main/sam_hq2_base.pt
