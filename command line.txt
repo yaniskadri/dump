@@ -27,3 +27,7 @@ python -c "import torch; print(torch.__version__); print(torch.__file__); print(
 torch.__version__ ne doit pas contenir +cpu
 
 torch.version.cuda ne doit pas être None
+
+import torch
+print(f"Total VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+print(f"Current Usage: {torch.cuda.memory_allocated(0) / 1e9:.2f} GB")
