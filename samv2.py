@@ -1,75 +1,90 @@
+import fitz  # PyMuPDF
 import numpy as np
-import torch
 import cv2
+import torch
 import matplotlib.pyplot as plt
 from segment_anything import sam_model_registry, SamPredictor
+from shapely.geometry import Polygon
 
-# 1. Configuration et Chargement (Optimisé pour 9GB VRAM)
-checkpoint = "sam_vit_b_01ec64.pth" # Utilise le modèle 'base' pour la vitesse
-model_type = "vit_b"
-device = "cuda"
+# --- CONFIGURATION ---
+PDF_PATH = "ton_schema.pdf"
+SAM_CHECKPOINT = "sam_vit_b_01ec64.pth"
+MODEL_TYPE = "vit_b"
+DEVICE = "cuda"
 
-sam = sam_model_registry[model_type](checkpoint=checkpoint)
-sam.to(device=device)
+# 1. CONVERSION PDF EN IMAGE (300 DPI pour la précision)
+def pdf_to_image(pdf_path):
+    doc = fitz.open(pdf_path)
+    page = doc.load_page(0)  # Première page
+    pix = page.get_pixmap(matrix=fitz.Matrix(300/72, 300/72))
+    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, 3)
+    return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+# 2. CHARGEMENT SAM
+sam = sam_model_registry[MODEL_TYPE](checkpoint=SAM_CHECKPOINT)
+sam.to(device=DEVICE).half() # Pour tes 9GB de VRAM
 predictor = SamPredictor(sam)
 
-def get_mask_overlay(mask, color):
-    """Crée une superposition colorée pour le masque."""
-    color_mask = np.zeros((*mask.shape, 3), dtype=np.uint8)
-    color_mask[mask] = color
-    return color_mask
-
-def run_sam_on_islands(image_path, list_of_island_data):
-    # Charger l'image
-    image = cv2.imread(image_path)
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    predictor.set_image(image)
+# 3. LOGIQUE DE DÉTECTION ET VISUALISATION
+def process_and_visualize(image, polygons_coords):
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    predictor.set_image(image_rgb)
     
-    output_image = image.copy()
+    # Trouver qui est dans quoi
+    hierarchy = find_hierarchy(polygons_coords)
     
-    with torch.inference_mode():
-        for item in list_of_island_data:
-            # 'box' : [xmin, ymin, xmax, ymax]
-            # 'internal_points' : [[x,y], [x,y]...] des composants à exclure
-            box = np.array(item['box'])
-            
-            # Stratégie élégante : 1 point positif au centre, points négatifs sur les switches
-            coords = [item['center']] # Point positif
-            labels = [1]
-            
-            if 'internal_points' in item:
-                coords.extend(item['internal_points'])
-                labels.extend([0] * len(item['internal_points']))
-            
-            masks, scores, _ = predictor.predict(
-                point_coords=np.array(coords),
-                point_labels=np.array(labels),
-                box=box,
-                multimask_output=False
-            )
-            
-            # Visualisation
-            mask = masks[0]
-            random_color = np.random.randint(0, 255, (3,)).tolist()
-            overlay = get_mask_overlay(mask, random_color)
-            
-            # Fusion avec l'image originale (alpha blending)
-            cv2.addWeighted(overlay, 0.4, output_image, 1.0, 0, output_image)
-            cv2.rectangle(output_image, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), random_color, 2)
+    canvas = image_rgb.copy()
+    
+    for item in hierarchy:
+        # Préparation des prompts
+        box = np.array(item['box'])
+        coords = [item['center']]
+        labels = [1] # Positif (le contenant)
+        
+        # Ajout des points négatifs pour les composants internes
+        if item['internal_points']:
+            # On en prend max 10 pour ne pas saturer SAM
+            internals = item['internal_points'][:10] 
+            coords.extend(internals)
+            labels.extend([0] * len(internals)) # 0 = Négatif (exclure)
 
-    return output_image
+        # Prediction
+        masks, scores, _ = predictor.predict(
+            point_coords=np.array(coords),
+            point_labels=np.array(labels),
+            box=box,
+            multimask_output=False
+        )
+        
+        # Dessiner le masque
+        mask = masks[0]
+        color = np.random.randint(0, 255, (3,)).tolist()
+        
+        # Création d'un calque coloré
+        mask_overlay = np.zeros_like(canvas)
+        mask_overlay[mask] = color
+        cv2.addWeighted(mask_overlay, 0.5, canvas, 1.0, 0, canvas)
+        
+        # Dessiner la boite englobante
+        cv2.rectangle(canvas, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), color, 2)
 
-# --- EXEMPLE D'UTILISATION ---
-# Supposons que tu as une grande île (rectangle de switches)
-test_island = {
-    'box': [100, 100, 800, 500],
-    'center': [150, 150], # Un coin du grand rectangle souvent vide
-    'internal_points': [[200, 250], [300, 250], [400, 250]] # Centres des switches à ne PAS fusionner
-}
+    return canvas
 
-final_view = run_sam_on_islands("diagramme.png", [test_island])
+# --- EXÉCUTION ---
+img = pdf_to_image(PDF_PATH)
 
-plt.figure(figsize=(12, 12))
-plt.imshow(final_view)
+# Remplace ceci par tes vraies coordonnées de polygones extraites
+# Exemple fictif : un grand rectangle et deux petits à l'intérieur
+fake_polys = [
+    [[100, 100], [900, 100], [900, 600], [100, 600]], # Le contenant
+    [[200, 200], [300, 200], [300, 300], [200, 300]], # Switch 1
+    [[400, 200], [500, 200], [500, 300], [400, 300]], # Switch 2
+]
+
+result_img = process_and_visualize(img, fake_polys)
+
+plt.figure(figsize=(20, 10))
+plt.imshow(result_img)
+plt.title("Détection SAM : Contenants vs Composants Internes")
 plt.axis('off')
 plt.show()
