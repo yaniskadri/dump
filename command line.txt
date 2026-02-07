@@ -35,3 +35,6 @@ print(f"Current Usage: {torch.cuda.memory_allocated(0) / 1e9:.2f} GB")
 curl -L -o sam_vit_b_01ec64.pth https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
 curl -L -o sam_vit_l_0b3195.pth https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth
 s
+
+mkdir -Force data\weights
+curl -L -o data\weights\sam_vit_b_01ec64.pth https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
