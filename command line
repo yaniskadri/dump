@@ -1,3 +1,29 @@
 .\python.exe -s -m pip install --pre --upgrade --no-cache-dir torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128
 
 .\python.exe -s -m pip install --pre --upgrade --no-cache-dir torchvision --extra-index-url https://download.pytorch.org/whl/nightly/cu128
+
+1) Vérifier que vous installez dans le bon Python
+python -c "import sys; print(sys.executable)"
+python -m pip -V
+
+2) Voir si pip a une config qui override l’index
+python -m pip config list
+
+
+Si vous voyez un global.index-url ou global.extra-index-url qui pointe vers PyPI/une autre source, pip peut vous installer le CPU malgré vos flags (selon l’ordre / commandes utilisées).
+
+3) Forcer une réinstall depuis nightly cu128 (et empêcher le cache)
+python -m pip uninstall -y torch torchvision torchaudio
+python -m pip cache purge
+
+python -m pip install --pre --upgrade --force-reinstall --no-cache-dir ^
+  --index-url https://download.pytorch.org/whl/nightly/cu128 ^
+  torch torchvision torchaudio
+
+4) Vérifier la version réellement importée
+python -c "import torch; print(torch.__version__); print(torch.__file__); print(torch.version.cuda)"
+
+
+torch.__version__ ne doit pas contenir +cpu
+
+torch.version.cuda ne doit pas être None
