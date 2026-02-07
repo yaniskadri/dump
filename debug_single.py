@@ -816,7 +816,7 @@ if __name__ == "__main__":
     parser.add_argument("--min-area", type=float, default=None, help="Aire minimum")
     parser.add_argument("--thin-wire", type=float, default=None, help="Seuil fil fin")
     parser.add_argument("--busbar", type=float, default=None, help="Seuil busbar")
-    parser.add_argument("--split", action="store_true", help="Afficher les visualisations UNE PAR UNE (haute résolution)")
+    parser.add_argument("--combined", action="store_true", help="Afficher toutes les visualisations dans UNE SEULE figure (par défaut: séparées)")
     parser.add_argument("--viz-dpi", type=int, default=None, help="DPI pour l'affichage/sauvegarde des visualisations (ex: 200)")
 
     args = parser.parse_args()
@@ -838,9 +838,11 @@ if __name__ == "__main__":
         config.classifier.thin_wire_threshold = args.thin_wire
     if args.busbar is not None:
         config.classifier.busbar_threshold = args.busbar
-    # Visualization mode overrides
-    if args.split:
-        config._viz_split = True
+    # Visualization mode overrides (default is split mode now)
+    if args.combined:
+        config._viz_split = False
+    else:
+        config._viz_split = True  # Par défaut, mode séparé
     if args.viz_dpi is not None:
         config._viz_dpi = args.viz_dpi
 

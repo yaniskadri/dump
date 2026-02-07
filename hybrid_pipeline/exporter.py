@@ -84,8 +84,52 @@ def export_crops(
         os.makedirs(save_dir, exist_ok=True)
 
         fname = f"{file_base}_p{comp.page_index}_id{comp.id}.png"
-        cv2.imwrite(os.path.join(save_dir, fname), crop)
-        count += 1
+        out_path = os.path.join(save_dir, fname)
+        manifest = os.path.join(output_root, "save_manifest.txt")
+
+        ok = cv2.imwrite(out_path, crop)
+        if ok:
+            try:
+                st = os.stat(out_path)
+                if st.st_size == 0:
+                    print(f"Saved file is zero bytes: {out_path}")
+                else:
+                    count += 1
+                    try:
+                        os.makedirs(os.path.dirname(manifest) or ".", exist_ok=True)
+                        with open(manifest, "a", encoding="utf-8") as mf:
+                            mf.write(out_path + "\n")
+                    except Exception:
+                        pass
+                    print(f"Saved crop: {out_path} ({st.st_size} bytes)")
+            except Exception as e:
+                print(f"Saved crop but stat failed: {out_path} -> {e}")
+        else:
+            # Fallback: try encoding to PNG in-memory and writing bytes
+            try:
+                ret, buf = cv2.imencode('.png', crop)
+                if ret:
+                    with open(out_path, 'wb') as fh:
+                        fh.write(buf.tobytes())
+                    try:
+                        st = os.stat(out_path)
+                        if st.st_size > 0:
+                            count += 1
+                            try:
+                                os.makedirs(os.path.dirname(manifest) or ".", exist_ok=True)
+                                with open(manifest, "a", encoding="utf-8") as mf:
+                                    mf.write(out_path + "\n")
+                            except Exception:
+                                pass
+                            print(f"Saved crop via fallback: {out_path} ({st.st_size} bytes)")
+                        else:
+                            print(f"Fallback wrote zero bytes: {out_path}")
+                    except Exception as e:
+                        print(f"Fallback wrote file but stat failed: {out_path} -> {e}")
+                else:
+                    print(f"Failed to encode crop for: {out_path}")
+            except Exception as e:
+                print(f"Failed to save crop: {out_path} -> {e}")
 
     return count
 
