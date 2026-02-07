@@ -74,4 +74,38 @@ def show_masks_on_image(image, masks, ax):
     # Trier par aire (les plus grands en premier, pour pas qu'ils cachent les petits)
     sorted_masks = sorted(masks, key=lambda x: x['area'], reverse=True)
     
-    # Créer une image de couleurs aléatoires pou
+    # Créer une image de couleurs aléatoires pour chaque mask
+    overlay = np.zeros((*image.shape[:2], 4))
+    
+    for i, mask_data in enumerate(sorted_masks):
+        mask = mask_data['segmentation']
+        
+        # Couleur aléatoire
+        color = np.random.random(3)
+        
+        # Appliquer le mask avec transparence
+        overlay[mask] = [*color, 0.35]  # Alpha = 0.35
+    
+    ax.imshow(overlay)
+
+
+def show_boxes_on_image(masks, ax):
+    """Affiche juste les bounding boxes"""
+    import matplotlib.patches as patches
+    
+    for mask_data in masks:
+        bbox = mask_data['bbox']  # Format: [x, y, width, height]
+        
+        rect = patches.Rectangle(
+            (bbox[0], bbox[1]),
+            bbox[2], bbox[3],
+            linewidth=1,
+            edgecolor='red',
+            facecolor='none',
+            alpha=0.8
+        )
+        ax.add_patch(rect)
+
+
+# Usage
+masks, image = visualize_sam_results("diagram.pdf", page_idx=0)
