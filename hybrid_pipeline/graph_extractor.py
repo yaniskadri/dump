@@ -122,8 +122,12 @@ def filter_by_node_degree(
     rejected = []
 
     for face in faces:
-        # Filtre par aire
-        if face.area < cls_config.min_area or face.area > cls_config.max_area:
+        # Filtre par aire (on ne rejette QUE les trop petits ici).
+        # Les faces trop grandes sont conservées pour permettre
+        # une fusion intelligente en aval (elles peuvent être
+        # des groupes de sous-faces). Rejeter uniquement les
+        # petites faces bruiteuses.
+        if face.area < cls_config.min_area:
             continue
 
         if not face.is_valid:
@@ -417,6 +421,15 @@ def smart_merge_faces(
         if len(indices) == 1:
             result.append(faces[indices[0]])
         else:
+            # Si plusieurs sous-faces du groupe ont chacune du texte,
+            # ce sont probablement des composants distincts (ex: plusieurs
+            # connecteurs côte à côte) — ne pas les fusionner.
+            textful = sum(1 for idx in indices if face_has_text[idx])
+            if textful > 1:
+                for idx in indices:
+                    result.append(faces[idx])
+                continue
+
             group_polys = [faces[i] for i in indices]
             merged = unary_union(group_polys)
             if merged.geom_type == "Polygon":
