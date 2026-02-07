@@ -60,3 +60,11 @@ def draw_polygons(polygons, linewidth=0.8, invert_y=True):
         ax.invert_yaxis()
 
     plt.show()
+
+
+seg0 = segments[0]
+print(type(seg0))
+print("has as_linestring:", hasattr(seg0, "as_linestring"))
+print("as_linestring attr:", seg0.as_linestring)
+print("callable:", callable(seg0.as_linestring))
+print("coords:", seg0.x1, seg0.y1, seg0.x2, seg0.y2)
