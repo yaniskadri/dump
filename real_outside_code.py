@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
+from shapely.validation import make_valid
 from segment_anything import sam_model_registry, SamPredictor
 
 # ─── Configuration ───────────────────────────────────────────────────
@@ -14,7 +15,7 @@ DPI_SCALE = RENDER_DPI / PDF_BASE_DPI  # ≈ 4.1667
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 1. ISLAND EXTRACTION  (replaces Crop_Pipeline.vector_engine.get_islands_data)
+# 1. ISLAND EXTRACTION
 # ═══════════════════════════════════════════════════════════════════════
 
 def get_islands_data(polygons, gap):
@@ -23,34 +24,40 @@ def get_islands_data(polygons, gap):
     
     Args:
         polygons: list of Shapely Polygon objects (PDF coordinate space).
-        gap: distance threshold for merging nearby polygons.
+        gap: distance threshold — polygons closer than this merge into one island.
     
     Returns:
-        list of dicts with keys:
-            'bbox'      – [xmin, ymin, xmax, ymax] in PDF coords
-            'members'   – all member polygons (sorted largest first)
-            'centroid'  – (x, y) centroid of the merged island shape
+        list of [xmin, ymin, xmax, ymax] bounding boxes in PDF coords.
     """
     if not polygons:
         return []
 
-    # Ensure we have proper Shapely Polygons (handles both raw coords & Polygon objects)
+    # Keep ALL polygons — fix invalid ones instead of dropping them
     clean = []
     for p in polygons:
-        if isinstance(p, Polygon):
-            if p.is_valid and not p.is_empty:
-                clean.append(p)
-        else:
+        if not isinstance(p, Polygon):
             try:
-                sp = Polygon(p)
-                if sp.is_valid and not sp.is_empty:
-                    clean.append(sp)
+                p = Polygon(p)
             except Exception:
                 continue
+        if p.is_empty:
+            continue
+        if not p.is_valid:
+            p = make_valid(p)
+        # make_valid can return GeometryCollections; extract polygons from those
+        if isinstance(p, Polygon) and not p.is_empty:
+            clean.append(p)
+        elif hasattr(p, 'geoms'):
+            for g in p.geoms:
+                if isinstance(g, Polygon) and not g.is_empty:
+                    clean.append(g)
 
     if not clean:
         return []
 
+    print(f"  [islands] {len(polygons)} input → {len(clean)} valid polygons")
+
+    # Buffer, merge, split into groups
     buffered = [p.buffer(gap) for p in clean]
     merged = unary_union(buffered)
 
@@ -59,20 +66,24 @@ def get_islands_data(polygons, gap):
     else:
         island_shapes = list(merged.geoms)
 
-    islands_data = []
+    # For each island, compute bbox from the ORIGINAL member polygons (no buffer bloat)
+    islands = []
+    used = 0
     for island_shape in island_shapes:
         members = [p for p in clean if island_shape.intersects(p)]
-        members.sort(key=lambda x: x.area, reverse=True)
+        if not members:
+            continue
+        used += len(members)
+        all_bounds = [m.bounds for m in members]  # (xmin, ymin, xmax, ymax)
+        xmin = min(b[0] for b in all_bounds)
+        ymin = min(b[1] for b in all_bounds)
+        xmax = max(b[2] for b in all_bounds)
+        ymax = max(b[3] for b in all_bounds)
+        islands.append([xmin, ymin, xmax, ymax])
 
-        # Use the island centroid (not just largest member) for the SAM positive point
-        centroid = island_shape.centroid
-        islands_data.append({
-            'bbox': list(island_shape.buffer(-gap).bounds if not island_shape.buffer(-gap).is_empty
-                         else island_shape.bounds),
-            'members': members,
-            'centroid': (centroid.x, centroid.y),
-        })
-    return islands_data
+    print(f"  [islands] → {len(islands)} islands  "
+          f"({used} polygons assigned, {len(clean) - used} orphaned)")
+    return islands
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -83,16 +94,11 @@ def run_sam_hierarchical(image, polygons, gap=3, sam_checkpoint=r"..\Models\sam_
     """
     Run SAM on each island with properly scaled coordinates.
     
-    The polygons are in PDF space (72 DPI) but the image is rendered at
-    RENDER_DPI.  Every coordinate sent to SAM must be multiplied by DPI_SCALE.
-    
-    Prompt strategy per island:
-        • box   = scaled bounding box of the island
-        • point = scaled centroid of the island (label=1, foreground)
+    Polygons are in PDF space (72 DPI), image is rendered at RENDER_DPI.
+    Only uses box prompts — one per island.
     
     Returns:
         (final_masks, image)
-        final_masks: list of dicts with 'mask', 'box_pixel', 'box_pdf', 'id'
     """
     # Setup SAM
     sam = sam_model_registry["vit_b"](checkpoint=sam_checkpoint)
@@ -101,27 +107,21 @@ def run_sam_hierarchical(image, polygons, gap=3, sam_checkpoint=r"..\Models\sam_
     predictor = SamPredictor(sam)
     predictor.set_image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
 
-    # Build islands in PDF space
+    # Build islands (list of bbox in PDF space)
     islands = get_islands_data(polygons, gap)
     print(f"Islands detected: {len(islands)}")
 
     final_masks = []
 
-    for idx, island in enumerate(islands):
-        # --- Scale PDF coords → pixel coords ---
-        pdf_box = np.array(island['bbox'])  # [xmin, ymin, xmax, ymax]
+    for idx, pdf_box in enumerate(islands):
+        # Scale PDF coords → pixel coords
+        pdf_box = np.array(pdf_box)
         pixel_box = pdf_box * DPI_SCALE
-
-        cx_pdf, cy_pdf = island['centroid']
-        pixel_point = np.array([[cx_pdf * DPI_SCALE, cy_pdf * DPI_SCALE]])
-        point_label = np.array([1])  # foreground
 
         try:
             masks, scores, _ = predictor.predict(
-                point_coords=pixel_point,
-                point_labels=point_label,
                 box=pixel_box,
-                multimask_output=True,  # get 3 masks, pick best score
+                multimask_output=True,
             )
             best = int(np.argmax(scores))
             chosen_mask = masks[best]
@@ -179,8 +179,8 @@ def visualize_results(image, sam_results, islands_data=None,
     axes[0].axis('off')
 
     if islands_data:
-        for i, island in enumerate(islands_data):
-            bx = np.array(island['bbox']) * DPI_SCALE
+        for i, bbox in enumerate(islands_data):
+            bx = np.array(bbox) * DPI_SCALE
             w, h = bx[2] - bx[0], bx[3] - bx[1]
             rect = mpatches.Rectangle(
                 (bx[0], bx[1]), w, h,
@@ -192,9 +192,6 @@ def visualize_results(image, sam_results, islands_data=None,
                          color='white', fontsize=7, fontweight='bold',
                          bbox=dict(boxstyle='square,pad=0.15',
                                    facecolor='dodgerblue', alpha=0.7, edgecolor='none'))
-            # Mark centroid
-            cx, cy = island['centroid']
-            axes[0].plot(cx * DPI_SCALE, cy * DPI_SCALE, 'r+', markersize=6, markeredgewidth=1.5)
 
     # ── Right panel: SAM detections with masks ───────────────────────
     overlay = img_rgb.astype(np.float64).copy()
