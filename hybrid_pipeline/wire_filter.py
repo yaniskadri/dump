@@ -24,11 +24,18 @@ Pourquoi ça marche :
 """
 
 import math
+import time
+import sys
 import networkx as nx
 from collections import defaultdict
 from typing import List, Dict, Tuple, Set
 
 from .vector_utils import VectorSegment
+
+
+def _log(msg: str) -> None:
+    """Print with immediate flush."""
+    print(msg, flush=True)
 
 
 def _round_pt(x: float, y: float, precision: int = 1) -> tuple:
@@ -91,6 +98,7 @@ def identify_wire_segments(
     min_wire_length: float = 15.0,
     collinear_tolerance_deg: float = 15.0,
     min_chain_length: float = 20.0,
+    verbose: bool = False,
 ) -> Set[int]:
     """
     Identifie les indices des segments qui sont des fils (wires).
@@ -109,6 +117,7 @@ def identify_wire_segments(
         min_wire_length: Longueur min d'un segment pour être un bridge candidate.
         collinear_tolerance_deg: Tolérance d'angle pour la colinéarité.
         min_chain_length: Longueur totale min d'une chaîne pour être un fil.
+        verbose: Afficher les logs de progression.
 
     Returns:
         Set d'indices (dans la liste `segments`) des segments identifiés comme fils.
@@ -116,10 +125,15 @@ def identify_wire_segments(
     if not segments:
         return set()
 
+    t0 = time.time()
+
     # Index segments for fast lookup
     seg_index: Dict[int, VectorSegment] = {i: seg for i, seg in enumerate(segments)}
 
     # Build graph
+    if verbose:
+        _log(f"            Building wire graph ({len(segments)} segments)...")
+    
     G = nx.Graph()
     # Map: edge (normalized) -> list of (seg_index, VectorSegment)
     edge_seg_map: Dict[Tuple, List[Tuple[int, VectorSegment]]] = defaultdict(list)
@@ -138,18 +152,46 @@ def identify_wire_segments(
 
     degrees = dict(G.degree())
     wire_indices: Set[int] = set()
+    
+    if verbose:
+        n_nodes = G.number_of_nodes()
+        n_deg2 = sum(1 for d in degrees.values() if d == 2)
+        _log(f"            Graph: {n_nodes} nodes, {n_deg2} degree-2 nodes ({time.time()-t0:.1f}s)")
 
     # ── A. Wire chains ──
     # Find paths through degree-2 nodes (wire routing paths).
     # A wire chain is a sequence of connected segments where
     # all intermediate nodes have degree == 2, and consecutive
     # segments are roughly collinear (same direction).
-    visited_nodes = set()
+    
+    t1 = time.time()
+    visited_edges = set()  # Track visited edges to avoid reprocessing
+    
+    # Pre-filter: only process nodes with degree 2
+    deg2_nodes = [n for n, d in degrees.items() if d == 2]
+    
+    if verbose and len(deg2_nodes) > 5000:
+        _log(f"            ⚠️ {len(deg2_nodes)} degree-2 nodes — chain detection may be slow")
+    
+    chains_found = 0
+    max_chain_iterations = 100000  # Safety limit
+    iterations = 0
 
-    for start_node in G.nodes():
-        if degrees.get(start_node, 0) != 2:
-            continue  # Only start from degree-2 nodes (middle of wire)
-        if start_node in visited_nodes:
+    for start_node in deg2_nodes:
+        if iterations > max_chain_iterations:
+            if verbose:
+                _log(f"            ⚠️ Chain detection limit reached ({max_chain_iterations} iterations)")
+            break
+            
+        # Skip if all edges from this node are already visited
+        start_neighbors = list(G.neighbors(start_node))
+        all_visited = True
+        for neighbor in start_neighbors:
+            edge_key = (min(start_node, neighbor), max(start_node, neighbor))
+            if edge_key not in visited_edges:
+                all_visited = False
+                break
+        if all_visited:
             continue
 
         # Trace the chain in both directions
@@ -160,8 +202,8 @@ def identify_wire_segments(
             current = start_node
             prev = None
 
-            while True:
-                visited_nodes.add(current)
+            while iterations < max_chain_iterations:
+                iterations += 1
                 neighbors = list(G.neighbors(current))
 
                 if prev is not None:
@@ -173,6 +215,10 @@ def identify_wire_segments(
                 next_node = neighbors[0]
                 edge_key = (min(current, next_node), max(current, next_node))
 
+                # Skip already visited edges
+                if edge_key in visited_edges:
+                    break
+                    
                 if edge_key not in edge_seg_map:
                     break
 
@@ -187,6 +233,9 @@ def identify_wire_segments(
                         collinear_tolerance_deg,
                     ):
                         break  # Direction changed → end of wire
+                
+                # Mark edge as visited
+                visited_edges.add(edge_key)
 
                 for idx, seg in curr_segs:
                     chain_seg_indices.append(idx)
@@ -202,10 +251,17 @@ def identify_wire_segments(
         # Mark as wire if chain is long enough
         if chain_length >= min_chain_length and len(chain_seg_indices) >= 2:
             wire_indices.update(chain_seg_indices)
+            chains_found += 1
+    
+    if verbose:
+        _log(f"            Wire chains: {chains_found} found, {len(wire_indices)} segments ({time.time()-t1:.1f}s)")
 
     # ── B. Wire bridges ──
     # Individual long segments between two junctions (degree ≥ 3).
     # These are direct wire connections between components.
+    t2 = time.time()
+    bridges_before = len(wire_indices)
+    
     for i, seg in enumerate(segments):
         if i in wire_indices:
             continue
@@ -231,11 +287,18 @@ def identify_wire_segments(
             )
             if is_axis_aligned:
                 wire_indices.add(i)
+    
+    if verbose:
+        bridges_found = len(wire_indices) - bridges_before
+        _log(f"            Wire bridges: {bridges_found} found ({time.time()-t2:.1f}s)")
 
     # ── C. Long straight isolated segments ──
     # Very long segments (> 3× min_wire_length) that are axis-aligned
     # are almost always wires, regardless of endpoint degrees.
+    t3 = time.time()
+    long_before = len(wire_indices)
     long_threshold = min_wire_length * 3
+    
     for i, seg in enumerate(segments):
         if i in wire_indices:
             continue
@@ -251,6 +314,11 @@ def identify_wire_segments(
         if is_axis_aligned:
             wire_indices.add(i)
 
+    if verbose:
+        long_found = len(wire_indices) - long_before
+        _log(f"            Long wires: {long_found} found ({time.time()-t3:.1f}s)")
+        _log(f"            Total wire filter: {len(wire_indices)} wires ({time.time()-t0:.1f}s)")
+
     return wire_indices
 
 
@@ -260,6 +328,7 @@ def remove_wires(
     min_wire_length: float = 15.0,
     collinear_tolerance_deg: float = 15.0,
     min_chain_length: float = 20.0,
+    verbose: bool = True,
 ) -> Tuple[List[VectorSegment], List[VectorSegment]]:
     """
     Sépare les segments en composants et fils.
@@ -273,6 +342,7 @@ def remove_wires(
         min_wire_length=min_wire_length,
         collinear_tolerance_deg=collinear_tolerance_deg,
         min_chain_length=min_chain_length,
+        verbose=verbose,
     )
 
     component_segs = []

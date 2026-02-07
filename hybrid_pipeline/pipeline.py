@@ -18,9 +18,15 @@ Usage:
 
 import fitz
 import os
+import time
 from shapely.geometry import Polygon, box as shp_box
 from shapely.ops import unary_union
 from typing import Optional, List, Dict
+
+
+def _log(msg: str) -> None:
+    """Print with immediate flush for visibility during long operations."""
+    print(msg, flush=True)
 
 from .config import PipelineConfig
 from .vector_utils import extract_segments_from_page, extract_text_blocks
@@ -300,7 +306,7 @@ class HybridPipeline:
         self.doc = fitz.open(pdf_path)
         self.file_base = os.path.splitext(os.path.basename(pdf_path))[0]
 
-    def process_page(self, page_index: int = 0) -> List[DetectedComponent]:
+    def process_page(self, page_index: int = 0, verbose: bool = True) -> List[DetectedComponent]:
         """
         Traite une page complète.
         
@@ -308,10 +314,15 @@ class HybridPipeline:
             Liste de DetectedComponent classifiés et dédupliqués.
         """
         page = self.doc[page_index]
+        t0 = time.time()
 
         # ── 1. EXTRACTION VECTORIELLE ──
+        if verbose:
+            _log(f"    [1/6] Extraction des vecteurs...")
         segments = extract_segments_from_page(page)
         text_bboxes = extract_text_blocks(page)
+        if verbose:
+            _log(f"          → {len(segments)} segments, {len(text_bboxes)} textes ({time.time()-t0:.1f}s)")
 
         if not segments:
             return []
@@ -322,35 +333,57 @@ class HybridPipeline:
         # drastiquement la détection de composants.
         wire_cfg = self.config.wire_filter
         if wire_cfg.enabled:
+            if verbose:
+                _log(f"    [1b/6] Filtrage des fils...")
+            t1 = time.time()
             component_segments, wire_segments = remove_wires(
                 segments,
                 precision=self.config.graph.coord_precision,
                 min_wire_length=wire_cfg.min_wire_length,
                 collinear_tolerance_deg=wire_cfg.collinear_tolerance_deg,
                 min_chain_length=wire_cfg.min_chain_length,
+                verbose=verbose,
             )
+            if verbose:
+                _log(f"          → {len(wire_segments)} fils retirés, {len(component_segments)} segments restants ({time.time()-t1:.1f}s)")
         else:
             component_segments = segments
             wire_segments = []
 
         # ── 2. GRAPH EXTRACTOR (formes fermées) ──
+        if verbose:
+            _log(f"    [2/6] Graph extractor (polygonize)...")
+            if len(component_segments) > 5000:
+                _log(f"          ⚠️  {len(component_segments)} segments — cela peut prendre du temps!")
+        t2 = time.time()
         graph_polygons = run_graph_extraction(
             segments=component_segments,
             text_bboxes=text_bboxes,
             graph_config=self.config.graph,
             cls_config=self.config.classifier,
+            verbose=verbose,
         )
+        if verbose:
+            _log(f"          → {len(graph_polygons)} polygones fermés ({time.time()-t2:.1f}s)")
 
         # ── 3. DBSCAN EXTRACTOR (formes ouvertes / orphelins) ──
         # Feed component_segments (not all segments) — wires are excluded.
+        if verbose:
+            _log(f"    [3/6] DBSCAN extractor...")
+        t3 = time.time()
         dbscan_polygons = run_dbscan_extraction(
             segments=component_segments,
             captured_polygons=graph_polygons,
             dbscan_config=self.config.dbscan,
             cls_config=self.config.classifier,
         )
+        if verbose:
+            _log(f"          → {len(dbscan_polygons)} clusters ouverts ({time.time()-t3:.1f}s)")
 
         # ── 4. CLASSIFICATION ──
+        if verbose:
+            _log(f"    [4/6] Classification...")
+        t4 = time.time()
         graph_components = classify_all(
             graph_polygons,
             self.config.classifier,
@@ -366,8 +399,13 @@ class HybridPipeline:
             page_index=page_index,
             id_offset=len(graph_components),
         )
+        if verbose:
+            _log(f"          → {len(graph_components)} graph + {len(dbscan_components)} dbscan ({time.time()-t4:.1f}s)")
 
         # ── 5. DÉDUPLICATION ──
+        if verbose:
+            _log(f"    [5/6] Déduplication & merge...")
+        t5 = time.time()
         all_components = deduplicate(
             graph_components,
             dbscan_components,
@@ -383,10 +421,15 @@ class HybridPipeline:
         )
 
         # ── 6. POST-CLASSIFICATION CLEANUP ──
+        if verbose:
+            _log(f"    [6/6] Post-cleanup...")
         all_components = post_classification_cleanup(
             all_components,
             self.config.containment_threshold,
         )
+        if verbose:
+            _log(f"          → {len(all_components)} composants finaux ({time.time()-t5:.1f}s)")
+            _log(f"          Total page: {time.time()-t0:.1f}s")
 
         return all_components
 
@@ -420,15 +463,15 @@ class HybridPipeline:
         total_crops = 0
 
         for page_idx in pages:
-            print(f"[Page {page_idx + 1}/{len(self.doc)}] Extraction...")
+            _log(f"\n[Page {page_idx + 1}/{len(self.doc)}] Extraction...")
 
             # Détection
-            components = self.process_page(page_idx)
+            components = self.process_page(page_idx, verbose=True)
             all_results[page_idx] = components
 
             n_graph = sum(1 for c in components if c.source == "graph")
             n_dbscan = sum(1 for c in components if c.source == "dbscan")
-            print(f"  → {len(components)} composants "
+            _log(f"  → {len(components)} composants "
                   f"(Graph: {n_graph}, DBSCAN: {n_dbscan})")
 
             # Stats par catégorie
@@ -436,10 +479,11 @@ class HybridPipeline:
             for c in components:
                 cats[c.category] = cats.get(c.category, 0) + 1
             for cat, n in sorted(cats.items()):
-                print(f"    • {cat}: {n}")
+                _log(f"    • {cat}: {n}")
 
             # Export crops
             if export_crops_flag and components:
+                _log(f"  Rendering crops...")
                 page = self.doc[page_idx]
                 img = render_page_image(page, self.config.export.dpi)
                 crops_dir = os.path.join(output_dir, "crops")
@@ -448,7 +492,7 @@ class HybridPipeline:
                     self.config.export, self.file_base,
                 )
                 total_crops += n
-                print(f"  → {n} crops sauvegardés")
+                _log(f"  → {n} crops sauvegardés")
 
             # Export YOLO labels
             if export_yolo and components:
@@ -468,9 +512,9 @@ class HybridPipeline:
         if export_json:
             json_path = os.path.join(output_dir, f"{self.file_base}_metadata.json")
             export_metadata(all_results, json_path, self.pdf_path)
-            print(f"\n✅ Métadonnées → {json_path}")
+            _log(f"\n✅ Métadonnées → {json_path}")
 
-        print(f"\n🏁 Pipeline terminée : {total_crops} crops total "
+        _log(f"\n🏁 Pipeline terminée : {total_crops} crops total "
               f"sur {len(pages)} page(s).")
 
         return all_results

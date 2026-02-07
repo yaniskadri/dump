@@ -17,12 +17,18 @@ Pourquoi pas minimum_cycle_basis ?
 """
 
 import networkx as nx
+import time
 from shapely.geometry import Polygon, box, LineString
 from shapely.ops import unary_union, polygonize
 from typing import Optional, List, Tuple, Dict
 
 from .config import GraphConfig, ClassifierConfig
 from .vector_utils import VectorSegment
+
+
+def _log(msg: str) -> None:
+    """Print with immediate flush."""
+    print(msg, flush=True)
 
 
 def build_graph(segments: List[VectorSegment], precision: int = 1) -> nx.Graph:
@@ -44,7 +50,7 @@ def get_node_degrees(G: nx.Graph) -> dict:
     return dict(G.degree())
 
 
-def find_all_faces(segments: List[VectorSegment]) -> List[Polygon]:
+def find_all_faces(segments: List[VectorSegment], verbose: bool = False) -> List[Polygon]:
     """
     Utilise Shapely polygonize pour trouver toutes les faces fermées
     dans l'arrangement planaire des segments vectoriels.
@@ -62,9 +68,20 @@ def find_all_faces(segments: List[VectorSegment]) -> List[Polygon]:
         return []
 
     try:
+        if verbose:
+            _log(f"            unary_union sur {len(lines)} lignes...")
+        t0 = time.time()
         merged = unary_union(lines)
+        if verbose:
+            _log(f"            unary_union: {time.time()-t0:.1f}s")
+            _log(f"            polygonize...")
+        t1 = time.time()
         faces = list(polygonize(merged))
-    except Exception:
+        if verbose:
+            _log(f"            polygonize: {time.time()-t1:.1f}s → {len(faces)} faces")
+    except Exception as e:
+        if verbose:
+            _log(f"            ERREUR polygonize: {e}")
         return []
 
     return faces
@@ -474,6 +491,7 @@ def run_graph_extraction(
     text_bboxes: List[Tuple],
     graph_config: GraphConfig,
     cls_config: ClassifierConfig,
+    verbose: bool = True,
 ) -> List[Polygon]:
     """
     Pipeline complète d'extraction par topologie vectorielle.
@@ -491,28 +509,55 @@ def run_graph_extraction(
     if not segments:
         return []
 
+    t0 = time.time()
+
     # 1. Trouver toutes les faces fermées via polygonize
-    all_faces = find_all_faces(segments)
+    if verbose:
+        _log(f"          [graph 1/5] polygonize ({len(segments)} segments)...")
+    t1 = time.time()
+    all_faces = find_all_faces(segments, verbose=verbose)
+    if verbose:
+        _log(f"          [graph 1/5] → {len(all_faces)} faces ({time.time()-t1:.1f}s)")
 
     if not all_faces:
         return []
 
     # 2. Construire le graphe pour les degrés des nœuds
+    if verbose:
+        _log(f"          [graph 2/5] build_graph...")
+    t2 = time.time()
     G = build_graph(segments, graph_config.coord_precision)
     node_degrees = get_node_degrees(G)
+    if verbose:
+        _log(f"          [graph 2/5] → {len(node_degrees)} nœuds ({time.time()-t2:.1f}s)")
 
     # 3. Node Degree Filter
+    if verbose:
+        _log(f"          [graph 3/5] node degree filter...")
+    t3 = time.time()
     candidates, _rejected = filter_by_node_degree(
         all_faces, node_degrees, graph_config, cls_config,
     )
+    if verbose:
+        _log(f"          [graph 3/5] → {len(candidates)} gardées, {len(_rejected)} rejetées ({time.time()-t3:.1f}s)")
 
     # 4. Filtre Vide & Solitaire
+    if verbose:
+        _log(f"          [graph 4/5] empty/isolated filter...")
+    t4 = time.time()
     filtered = filter_isolated_empty(candidates, text_bboxes)
+    if verbose:
+        _log(f"          [graph 4/5] → {len(filtered)} après filtre ({time.time()-t4:.1f}s)")
 
     # 5. Smart Merge (remplace l'ancien unary_union aveugle)
     if not filtered:
         return []
 
+    if verbose:
+        _log(f"          [graph 5/5] smart_merge...")
+    t5 = time.time()
     result = smart_merge_faces(filtered, graph_config, text_bboxes)
+    if verbose:
+        _log(f"          [graph 5/5] → {len(result)} polygones finaux ({time.time()-t5:.1f}s)")
 
     return result
