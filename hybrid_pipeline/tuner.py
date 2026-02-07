@@ -39,6 +39,7 @@ from .config import (
     GraphConfig,
     DBSCANConfig,
     ClassifierConfig,
+    WireFilterConfig,
 )
 from .pipeline import HybridPipeline, compute_iou
 from .classifier import DetectedComponent
@@ -304,6 +305,20 @@ def build_config_from_trial(trial: optuna.Trial) -> PipelineConfig:
         "proximity_merge_radius", 3.0, 20.0, step=1.0,
     )
 
+    # ── Wire Filter Config ──
+    config.wire_filter.enabled = trial.suggest_categorical(
+        "wire.enabled", [True, False],
+    )
+    config.wire_filter.min_wire_length = trial.suggest_float(
+        "wire.min_wire_length", 8.0, 40.0, step=2.0,
+    )
+    config.wire_filter.collinear_tolerance_deg = trial.suggest_float(
+        "wire.collinear_tol_deg", 5.0, 30.0, step=5.0,
+    )
+    config.wire_filter.min_chain_length = trial.suggest_float(
+        "wire.min_chain_length", 10.0, 50.0, step=5.0,
+    )
+
     return config
 
 
@@ -460,6 +475,10 @@ class PipelineTuner:
                 "dedup_iou_threshold": 0.3,
                 "containment_threshold": 0.8,
                 "proximity_merge_radius": 8.0,
+                "wire.enabled": True,
+                "wire.min_wire_length": 15.0,
+                "wire.collinear_tol_deg": 15.0,
+                "wire.min_chain_length": 20.0,
             }
         )
 
@@ -519,6 +538,16 @@ class PipelineTuner:
         if "proximity_merge_radius" in params:
             config.proximity_merge_radius = params["proximity_merge_radius"]
 
+        # Wire filter
+        if "wire.enabled" in params:
+            config.wire_filter.enabled = params["wire.enabled"]
+        if "wire.min_wire_length" in params:
+            config.wire_filter.min_wire_length = params["wire.min_wire_length"]
+        if "wire.collinear_tol_deg" in params:
+            config.wire_filter.collinear_tolerance_deg = params["wire.collinear_tol_deg"]
+        if "wire.min_chain_length" in params:
+            config.wire_filter.min_chain_length = params["wire.min_chain_length"]
+
         return config
 
     @staticmethod
@@ -565,6 +594,12 @@ class PipelineTuner:
             "dedup_iou_threshold": config.dedup_iou_threshold,
             "containment_threshold": config.containment_threshold,
             "proximity_merge_radius": config.proximity_merge_radius,
+            "wire_filter": {
+                "enabled": config.wire_filter.enabled,
+                "min_wire_length": config.wire_filter.min_wire_length,
+                "collinear_tolerance_deg": config.wire_filter.collinear_tolerance_deg,
+                "min_chain_length": config.wire_filter.min_chain_length,
+            },
         }
 
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -598,6 +633,10 @@ class PipelineTuner:
             config.containment_threshold = data["containment_threshold"]
         if "proximity_merge_radius" in data:
             config.proximity_merge_radius = data["proximity_merge_radius"]
+
+        for key, val in data.get("wire_filter", {}).items():
+            if hasattr(config.wire_filter, key):
+                setattr(config.wire_filter, key, val)
 
         return config
 

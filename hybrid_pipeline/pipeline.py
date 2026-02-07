@@ -23,6 +23,7 @@ from shapely.ops import unary_union
 
 from .config import PipelineConfig
 from .vector_utils import extract_segments_from_page, extract_text_blocks
+from .wire_filter import remove_wires
 from .graph_extractor import run_graph_extraction
 from .dbscan_extractor import run_dbscan_extraction
 from .classifier import classify_all, classify_polygon, compute_metrics, DetectedComponent
@@ -314,17 +315,35 @@ class HybridPipeline:
         if not segments:
             return []
 
+        # ── 1b. WIRE REMOVAL (suppression des fils) ──
+        # Retire les segments de fils AVANT polygonize.
+        # Élimine les faux polygones aux croisements et simplifie
+        # drastiquement la détection de composants.
+        wire_cfg = self.config.wire_filter
+        if wire_cfg.enabled:
+            component_segments, wire_segments = remove_wires(
+                segments,
+                precision=self.config.graph.coord_precision,
+                min_wire_length=wire_cfg.min_wire_length,
+                collinear_tolerance_deg=wire_cfg.collinear_tolerance_deg,
+                min_chain_length=wire_cfg.min_chain_length,
+            )
+        else:
+            component_segments = segments
+            wire_segments = []
+
         # ── 2. GRAPH EXTRACTOR (formes fermées) ──
         graph_polygons = run_graph_extraction(
-            segments=segments,
+            segments=component_segments,
             text_bboxes=text_bboxes,
             graph_config=self.config.graph,
             cls_config=self.config.classifier,
         )
 
         # ── 3. DBSCAN EXTRACTOR (formes ouvertes / orphelins) ──
+        # Feed component_segments (not all segments) — wires are excluded.
         dbscan_polygons = run_dbscan_extraction(
-            segments=segments,
+            segments=component_segments,
             captured_polygons=graph_polygons,
             dbscan_config=self.config.dbscan,
             cls_config=self.config.classifier,

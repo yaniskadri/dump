@@ -9,6 +9,26 @@ from dataclasses import dataclass, field
 
 
 @dataclass
+class WireFilterConfig:
+    """Paramètres pour la suppression des fils avant détection."""
+    # Activer/désactiver le filtre de fils.
+    enabled: bool = True
+
+    # Longueur minimale d'un segment pour être candidat "wire bridge"
+    # (fil direct entre deux jonctions). En points PDF.
+    min_wire_length: float = 15.0
+
+    # Tolérance angulaire (en degrés) pour considérer deux segments
+    # consécutifs comme colinéaires (même direction = même fil).
+    collinear_tolerance_deg: float = 15.0
+
+    # Longueur totale minimale d'une chaîne de segments colinéaires
+    # pour être classée comme fil. Les chaînes plus courtes sont gardées
+    # (probablement des côtés de composants).
+    min_chain_length: float = 20.0
+
+
+@dataclass
 class GraphConfig:
     """Paramètres pour l'extraction par théorie des graphes (NetworkX)."""
     # Précision d'arrondi des coordonnées (en points PDF) pour fusionner
@@ -124,6 +144,7 @@ class ExportConfig:
 @dataclass
 class PipelineConfig:
     """Configuration globale de la pipeline."""
+    wire_filter: WireFilterConfig = field(default_factory=WireFilterConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
     dbscan: DBSCANConfig = field(default_factory=DBSCANConfig)
     classifier: ClassifierConfig = field(default_factory=ClassifierConfig)

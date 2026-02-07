@@ -15,9 +15,9 @@ CLI :
     python -m hybrid_pipeline schema.pdf -o output_dataset/ --viz
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
-from .config import PipelineConfig
+from .config import PipelineConfig, WireFilterConfig
 from .pipeline import HybridPipeline
 from .visualizer import quick_visualize
 from .tuner import PipelineTuner, AutoCalibrator
