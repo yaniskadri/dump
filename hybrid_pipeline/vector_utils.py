@@ -65,10 +65,35 @@ def extract_segments_from_page(page: fitz.Page) -> list[VectorSegment]:
                     item[1].x, item[1].y, item[2].x, item[2].y
                 ))
 
-            elif item[0] == "c":  # Courbe de Bézier → approximation linéaire
-                segments.append(VectorSegment(
-                    item[1].x, item[1].y, item[-1].x, item[-1].y
-                ))
+            elif item[0] == "c":  # Courbe de Bézier → approximation multi-points
+                # Une courbe de Bézier cubique a 4 points de contrôle.
+                # Approximer avec N segments au lieu d'un seul (start→end)
+                # pour capturer les cercles, arcs, et formes courbes.
+                p0 = item[1]
+                p1 = item[2]
+                p2 = item[3]
+                p3 = item[4]
+                n_steps = 8  # 8 segments par courbe (suffisant pour les cercles)
+                prev = p0
+                for step in range(1, n_steps + 1):
+                    t = step / n_steps
+                    t2 = t * t
+                    t3 = t2 * t
+                    mt = 1 - t
+                    mt2 = mt * mt
+                    mt3 = mt2 * mt
+                    # De Casteljau / formule explicite
+                    bx = mt3*p0.x + 3*mt2*t*p1.x + 3*mt*t2*p2.x + t3*p3.x
+                    by = mt3*p0.y + 3*mt2*t*p1.y + 3*mt*t2*p2.y + t3*p3.y
+                    segments.append(VectorSegment(
+                        prev.x, prev.y, bx, by
+                    ))
+                    # Créer un point temporaire pour le prochain segment
+                    class _TmpPt:
+                        def __init__(self, x, y):
+                            self.x = x
+                            self.y = y
+                    prev = _TmpPt(bx, by)
 
             elif item[0] == "re":  # Rectangle → 4 segments
                 r = item[1]

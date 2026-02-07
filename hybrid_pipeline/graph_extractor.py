@@ -170,18 +170,27 @@ def filter_isolated_empty(
     Filtre "Vide & Solitaire" : rejette les polygones qui sont à la fois
     vides de texte ET isolés (pas de voisin adjacent).
     
-    Un composant légitime a soit du texte à l'intérieur, soit fait partie
-    d'une grille de connecteurs (voisins qui se touchent).
+    Exceptions (composant gardé même si isolé sans texte) :
+      - Formes compactes (circularité > 0.50 ou g-ratio > 0.80)
+      - Texte à proximité (pas uniquement à l'intérieur)
     """
     if not candidates:
         return []
 
+    import math
     text_polys = [box(t[0], t[1], t[2], t[3]) for t in text_bboxes]
+    text_proximity = 12.0  # points PDF autour du composant
 
     valid = []
     for i, poly in enumerate(candidates):
         # A. Test de contenu (texte à l'intérieur ou qui touche)
         has_text = any(poly.intersects(tp) for tp in text_polys)
+
+        # A'. Test de proximité de texte (étiquette à côté du composant)
+        has_text_nearby = has_text
+        if not has_text:
+            poly_buf = poly.buffer(text_proximity)
+            has_text_nearby = any(poly_buf.intersects(tp) for tp in text_polys)
 
         # B. Test de voisinage (adjacence avec d'autres candidats)
         neighbors = 0
@@ -191,8 +200,22 @@ def filter_isolated_empty(
             if poly.touches(other) or poly.intersects(other):
                 neighbors += 1
 
-        # C. Décision
-        if has_text or neighbors >= 1:
+        # C. Test de compacité (forme intrinsèquement intéressante)
+        is_compact = False
+        try:
+            perimeter = poly.length
+            if perimeter > 0:
+                circ = (4 * math.pi * poly.area) / (perimeter ** 2)
+                if circ > 0.50:
+                    is_compact = True
+            mrr = poly.minimum_rotated_rectangle
+            if mrr.area > 0 and poly.area / mrr.area > 0.80:
+                is_compact = True
+        except Exception:
+            pass
+
+        # D. Décision : garder si au moins un critère est rempli
+        if has_text or has_text_nearby or neighbors >= 1 or is_compact:
             valid.append(poly)
 
     return valid
@@ -234,9 +257,46 @@ def _polygon_aspect_ratio(poly: Polygon) -> float:
         return 1.0
 
 
+def _is_boundary_collinear(a: Polygon, b: Polygon, tolerance: float = 1.0) -> bool:
+    """
+    Vérifie si le bord partagé entre deux faces est une seule ligne droite.
+    
+    Si c'est le cas, c'est probablement un fil qui separe deux composants
+    distincts (pas des sous-faces d'un même composant).
+    Un vrai bord interne de composant est généralement un côté du rectangle,
+    mais entre deux composants le bord est un segment de fil.
+    """
+    try:
+        shared = a.boundary.intersection(b.buffer(tolerance).boundary)
+        if shared.is_empty:
+            return False
+        # Si le bord partagé est un seul LineString quasi-droit, c'est un fil
+        if shared.geom_type == 'LineString':
+            coords = list(shared.coords)
+            if len(coords) == 2:
+                return True  # Segment simple = fil
+            # Vérifier si tous les points sont quasi-colinéaires
+            if len(coords) >= 2:
+                dx = coords[-1][0] - coords[0][0]
+                dy = coords[-1][1] - coords[0][1]
+                length = (dx*dx + dy*dy) ** 0.5
+                if length > 0:
+                    max_dev = 0.0
+                    for c in coords[1:-1]:
+                        # Distance point-droite
+                        dev = abs(dy*(c[0]-coords[0][0]) - dx*(c[1]-coords[0][1])) / length
+                        max_dev = max(max_dev, dev)
+                    if max_dev < 2.0:  # Quasi-droit
+                        return True
+        return False
+    except Exception:
+        return False
+
+
 def smart_merge_faces(
     faces: list[Polygon],
     config: GraphConfig,
+    text_bboxes: list[tuple] | None = None,
 ) -> list[Polygon]:
     """
     Regroupe les sous-faces qui font partie d'un même composant,
@@ -263,6 +323,16 @@ def smart_merge_faces(
     n = len(faces)
     if n == 1:
         return faces
+
+    # Pré-calcul : quelles faces contiennent du texte ?
+    text_polys = []
+    if text_bboxes:
+        text_polys = [box(t[0], t[1], t[2], t[3]) for t in text_bboxes]
+
+    face_has_text = []
+    for f in faces:
+        has_t = any(f.intersects(tp) for tp in text_polys) if text_polys else False
+        face_has_text.append(has_t)
 
     # Union-Find
     parent = list(range(n))
@@ -302,6 +372,20 @@ def smart_merge_faces(
 
             if shared_ratio < config.merge_min_shared_boundary:
                 continue  # Juste un point de contact → pas le même composant
+
+            # 2b. Rejet si les DEUX faces ont du texte
+            #     = deux composants distincts (chacun a son label)
+            if face_has_text[i] and face_has_text[j]:
+                continue
+
+            # 2c. Rejet si le bord partagé est une ligne droite (= fil)
+            #     Les sous-faces d'un vrai composant partagent un côté
+            #     du rectangle (peut être droit aussi, mais vérifier en combo)
+            if _is_boundary_collinear(faces[i], faces[j], tol):
+                # Exception : si shared_ratio est très élevé, c'est quand même
+                # un vrai bord de composant (ex: rectangle coupé en 2)
+                if shared_ratio < 0.25:
+                    continue
 
             # 3. Test de croissance d'aire
             combined_area = areas[i] + areas[j]
@@ -387,6 +471,6 @@ def run_graph_extraction(
     if not filtered:
         return []
 
-    result = smart_merge_faces(filtered, graph_config)
+    result = smart_merge_faces(filtered, graph_config, text_bboxes)
 
     return result
