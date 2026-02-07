@@ -27,13 +27,19 @@ class GraphConfig:
     # d'un même composant (en points PDF).
     merge_neighbor_tolerance: float = 1.0
 
-    # Aire max combinée autorisée pour un merge (évite de fusionner
-    # deux composants distincts qui se touchent).
-    merge_max_combined_area: float = 3000.0
+    # Ratio min de bord partagé entre deux faces pour autoriser le merge.
+    # = longueur du bord commun / périmètre de la plus petite face.
+    # Sous-faces d'un même rectangle partagent un long bord → ratio élevé.
+    # Deux symboles distincts ne se touchent qu'en un point → ratio ~0.
+    merge_min_shared_boundary: float = 0.08
 
     # Ratio max entre l'aire combinée et la somme des aires individuelles.
     # Un ratio élevé signifie que le merge ajoute beaucoup de "vide" → rejet.
-    merge_max_area_growth: float = 1.5
+    merge_max_area_growth: float = 1.8
+
+    # Aspect ratio max du résultat après merge.
+    # Empêche de fusionner deux symboles côte à côte en une forme allongée.
+    merge_max_aspect_ratio: float = 6.0
 
 
 @dataclass
@@ -67,7 +73,7 @@ class ClassifierConfig:
 
     # Aire min/max d'un polygone pour être considéré (en points PDF²).
     min_area: float = 80.0
-    max_area: float = 50000.0
+    max_area: float = 150000.0
 
     # Ratio rectangularité (G-ratio) : aire_poly / aire_bbox_orienté.
     # > 0.70 → rectangulaire.

@@ -111,6 +111,9 @@ def filter_by_node_degree(
       - Compter combien ont degré ≥ 4 dans le graphe (= croisements).
       - Si le ratio de croisements > max_cross_ratio → artefact → rejeté.
       - Un vrai composant a des coins "propres" (degré 2 ou 3).
+      - Exception : les faces assez grandes (aire > 4× min_area) avec un
+        ratio modéré sont gardées — ce sont des sous-faces de gros
+        composants traversés par des fils.
     
     Returns:
         (faces_gardées, faces_rejetées) pour le debug.
@@ -143,7 +146,16 @@ def filter_by_node_degree(
         ratio = cross_count / len(coords)
 
         if ratio > config.max_cross_ratio:
-            rejected.append(face)
+            # Exception : les faces relativement grandes avec un ratio
+            # modéré sont probablement des sous-faces de gros composants
+            # (un fil traverse un rectangle → crée des nœuds degré-4).
+            # On les garde avec un seuil relaxé.
+            is_big = face.area > cls_config.min_area * 4
+            has_low_degree_corners = (len(coords) - cross_count) >= 2
+            if is_big and has_low_degree_corners and ratio < 0.85:
+                kept.append(face)
+            else:
+                rejected.append(face)
         else:
             kept.append(face)
 
@@ -186,23 +198,64 @@ def filter_isolated_empty(
     return valid
 
 
+def _shared_boundary_length(a: Polygon, b: Polygon, tolerance: float = 1.0) -> float:
+    """
+    Calcule la longueur du bord partagé entre deux polygones.
+    
+    Deux sous-faces d'un même rectangle partagent un segment complet
+    (longueur significative). Deux symboles distincts reliés par un fil
+    ne partagent qu'un point ou un segment minuscule.
+    """
+    try:
+        # Intersection des contours (pas des aires)
+        shared = a.boundary.intersection(b.buffer(tolerance).boundary)
+        if shared.is_empty:
+            return 0.0
+        return shared.length
+    except Exception:
+        return 0.0
+
+
+def _polygon_aspect_ratio(poly: Polygon) -> float:
+    """Calcule l'aspect ratio (long / court côté) du rectangle orienté min."""
+    try:
+        box_rot = poly.minimum_rotated_rectangle
+        if box_rot.is_empty:
+            return 1.0
+        x, y = box_rot.exterior.coords.xy
+        from shapely.geometry import Point as _Pt
+        e1 = _Pt(x[0], y[0]).distance(_Pt(x[1], y[1]))
+        e2 = _Pt(x[1], y[1]).distance(_Pt(x[2], y[2]))
+        short = min(e1, e2)
+        if short <= 0:
+            return 999.0
+        return max(e1, e2) / short
+    except Exception:
+        return 1.0
+
+
 def smart_merge_faces(
     faces: list[Polygon],
     config: GraphConfig,
 ) -> list[Polygon]:
     """
     Regroupe les sous-faces qui font partie d'un même composant,
-    SANS fusionner deux composants distincts qui se touchent simplement.
+    SANS fusionner deux composants distincts qui se touchent.
 
-    Stratégie :
-      - Deux faces sont fusionnables si elles partagent un bord (touchent)
-        ET que l'aire combinée ne dépasse pas un seuil raisonnable.
-      - On utilise un Union-Find pour regrouper les faces apparentées.
-      - Au sein d'un groupe, on fait unary_union pour reconstruire
-        le composant complet (ex: L-shape = 2 rectangles fusionnés).
+    Critères de fusion :
+      1. Les faces se touchent (tolérance configurable).
+      2. Elles partagent un vrai bord (pas juste un point de contact).
+         → ratio = longueur_bord_commun / périmètre_petite_face.
+      3. Le merge ne crée pas de gros trou vide (area growth check).
+      4. Le résultat du merge reste compact (aspect ratio check).
 
-    Cela évite le problème du unary_union aveugle qui fusionnait
-    deux symboles de terre adjacents en un seul blob.
+    Pourquoi ça sépare les grounds :
+      Deux symboles de terre se touchent en un seul point (via le fil)
+      → shared boundary ratio ≈ 0 → merge refusé.
+
+    Pourquoi ça reconstruit les gros rectangles :
+      Les sous-faces d'un rectangle partagent un côté entier
+      → shared boundary ratio élevé → merge autorisé.
     """
     if not faces:
         return []
@@ -225,34 +278,46 @@ def smart_merge_faces(
         if ra != rb:
             parent[ra] = rb
 
-    # Calculer les aires individuelles
+    # Pré-calcul
     areas = [f.area for f in faces]
+    perimeters = [f.length for f in faces]
 
-    # Construire les groupes : fusionner seulement les faces qui
-    # partagent un bord ET dont la combinaison reste raisonnable.
     tol = config.merge_neighbor_tolerance
     for i in range(n):
         for j in range(i + 1, n):
-            # Test de contact : les faces se touchent ou se chevauchent légèrement
+            # 1. Test de contact
             try:
                 if not faces[i].buffer(tol).intersects(faces[j]):
                     continue
             except Exception:
                 continue
 
-            # Test d'aire combinée : ne pas fusionner si le résultat est trop gros
-            combined_area = areas[i] + areas[j]
-            if combined_area > config.merge_max_combined_area:
-                continue
+            # 2. Test de bord partagé
+            shared_len = _shared_boundary_length(faces[i], faces[j], tol)
+            min_perim = min(perimeters[i], perimeters[j])
+            if min_perim > 0:
+                shared_ratio = shared_len / min_perim
+            else:
+                shared_ratio = 0.0
 
-            # Test de croissance d'aire : vérifier que le merge ne crée pas
-            # un gros trou vide entre les deux faces
+            if shared_ratio < config.merge_min_shared_boundary:
+                continue  # Juste un point de contact → pas le même composant
+
+            # 3. Test de croissance d'aire
+            combined_area = areas[i] + areas[j]
             try:
                 merged = unary_union([faces[i], faces[j]])
                 if merged.area > combined_area * config.merge_max_area_growth:
                     continue
             except Exception:
                 continue
+
+            # 4. Test de compacité du résultat
+            try:
+                if _polygon_aspect_ratio(merged) > config.merge_max_aspect_ratio:
+                    continue
+            except Exception:
+                pass
 
             union(i, j)
 
