@@ -1,75 +1,77 @@
 import fitz
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from matplotlib.collections import LineCollection
 import numpy as np
+import matplotlib.pyplot as plt
+from segment_anything import SamAutomaticMaskGenerator, sam_model_registry
+import torch
 
-def visualize_segments(pdf_path, page_idx=0, show_text=True):
+def visualize_sam_results(pdf_path, page_idx=0):
     """
-    Visualise les segments extraits par-dessus le PDF rasterisé.
+    Visualise les masks détectés par SAM sur un wiring diagram.
     """
-    # Ouvrir PDF
+    # 1. Charger SAM
+    print("Loading SAM model...")
+    sam = sam_model_registry["vit_h"](checkpoint="sam_vit_h_4b8939.pth")
+    sam.to(device="cuda" if torch.cuda.is_available() else "cpu")
+    
+    mask_generator = SamAutomaticMaskGenerator(
+        model=sam,
+        points_per_side=32,           # Grille de points pour la détection
+        pred_iou_thresh=0.86,         # Seuil de qualité
+        stability_score_thresh=0.92,  # Seuil de stabilité
+        min_mask_region_area=100,     # Aire minimale (en pixels)
+    )
+    
+    # 2. Rasteriser le PDF
+    print(f"Rendering PDF page {page_idx}...")
     doc = fitz.open(pdf_path)
     page = doc[page_idx]
+    pix = page.get_pixmap(dpi=300)  # Haute résolution pour SAM
+    image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, 3)
     
-    # Extraire segments (ton code existant)
-    segments = extract_segments_from_page(page)
-    text_blocks = extract_text_blocks(page) if show_text else []
+    # 3. Lancer SAM
+    print("Running SAM segmentation...")
+    masks = mask_generator.generate(image)
+    print(f"SAM found {len(masks)} objects")
     
-    # Rasteriser le PDF en fond
-    pix = page.get_pixmap(dpi=150)
-    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, 3)
+    # 4. Visualiser
+    fig, axes = plt.subplots(1, 3, figsize=(24, 8))
     
-    # Créer figure
-    fig, ax = plt.subplots(figsize=(20, 14))
-    ax.imshow(img, alpha=0.3)  # PDF en semi-transparent
+    # (a) Image originale
+    axes[0].imshow(image)
+    axes[0].set_title("Original Image")
+    axes[0].axis('off')
     
-    # Conversion PDF coords → Image coords (72 DPI → 150 DPI)
-    scale = 150 / 72
+    # (b) Tous les masks colorés
+    axes[1].imshow(image)
+    show_masks_on_image(image, masks, axes[1])
+    axes[1].set_title(f"All Masks ({len(masks)} objects)")
+    axes[1].axis('off')
     
-    # Dessiner les segments
-    lines = []
-    colors = []
-    
-    for seg in segments:
-        # Ligne de (x1,y1) à (x2,y2)
-        lines.append([
-            (seg.x1 * scale, seg.y1 * scale),
-            (seg.x2 * scale, seg.y2 * scale)
-        ])
-        
-        # Couleur selon type (si tu as marqué les courbes vs lignes)
-        if hasattr(seg, 'is_curve') and seg.is_curve:
-            colors.append('red')  # Courbes en rouge
-        else:
-            colors.append('blue')  # Lignes en bleu
-    
-    # Afficher toutes les lignes d'un coup (plus rapide)
-    lc = LineCollection(lines, colors=colors, linewidths=0.5, alpha=0.7)
-    ax.add_collection(lc)
-    
-    # Afficher les blocs de texte (optionnel)
-    if show_text:
-        for block in text_blocks:
-            x0, y0, x1, y1, text = block
-            rect = patches.Rectangle(
-                (x0 * scale, y0 * scale),
-                (x1 - x0) * scale,
-                (y1 - y0) * scale,
-                linewidth=1,
-                edgecolor='green',
-                facecolor='none',
-                alpha=0.5
-            )
-            ax.add_patch(rect)
-    
-    ax.set_xlim(0, img.shape[1])
-    ax.set_ylim(img.shape[0], 0)  # Inverser Y
-    ax.set_title(f"Segments extracted: {len(segments)}")
-    ax.axis('off')
+    # (c) Juste les bounding boxes
+    axes[2].imshow(image)
+    show_boxes_on_image(masks, axes[2])
+    axes[2].set_title("Bounding Boxes")
+    axes[2].axis('off')
     
     plt.tight_layout()
     plt.show()
+    
+    # 5. Stats
+    print("\n=== SAM Statistics ===")
+    areas = [m['area'] for m in masks]
+    print(f"Total objects: {len(masks)}")
+    print(f"Area range: {min(areas):.0f} - {max(areas):.0f} pixels²")
+    print(f"Mean area: {np.mean(areas):.0f} pixels²")
+    
+    return masks, image
 
-# Usage
-visualize_segments("diagram.pdf", page_idx=0, show_text=True)
+
+def show_masks_on_image(image, masks, ax):
+    """Affiche tous les masks avec des couleurs aléatoires"""
+    if len(masks) == 0:
+        return
+    
+    # Trier par aire (les plus grands en premier, pour pas qu'ils cachent les petits)
+    sorted_masks = sorted(masks, key=lambda x: x['area'], reverse=True)
+    
+    # Créer une image de couleurs aléatoires pou
