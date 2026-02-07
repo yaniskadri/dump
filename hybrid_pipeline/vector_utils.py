@@ -8,6 +8,7 @@ entre les modules graph et DBSCAN.
 import fitz
 import math
 from dataclasses import dataclass
+from typing import List, Tuple
 from shapely.geometry import LineString
 
 from .config import GraphConfig
@@ -47,7 +48,7 @@ class VectorSegment:
         return p1, p2
 
 
-def extract_segments_from_page(page: fitz.Page) -> list[VectorSegment]:
+def extract_segments_from_page(page: fitz.Page) -> List[VectorSegment]:
     """
     Extrait tous les segments vectoriels d'une page PDF.
     Lignes, courbes (approximées), rectangles (décomposés en 4 côtés).
@@ -110,7 +111,7 @@ def extract_segments_from_page(page: fitz.Page) -> list[VectorSegment]:
     return segments
 
 
-def extract_text_blocks(page: fitz.Page) -> list[tuple]:
+def extract_text_blocks(page: fitz.Page) -> List[Tuple]:
     """
     Extrait les blocs de texte d'une page PDF.
     

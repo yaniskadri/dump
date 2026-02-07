@@ -9,6 +9,7 @@ qui n'ont PAS été capturés par le graph_extractor (formes non fermées).
 """
 
 import numpy as np
+from typing import List, Tuple
 from sklearn.cluster import DBSCAN
 from shapely.geometry import box, Point, Polygon
 from shapely.ops import unary_union
@@ -18,18 +19,18 @@ from .vector_utils import VectorSegment
 
 
 def filter_segments_by_length(
-    segments: list[VectorSegment],
+    segments: List[VectorSegment],
     max_length: float,
-) -> list[VectorSegment]:
+) -> List[VectorSegment]:
     """Garde uniquement les segments courts (< max_length)."""
     return [s for s in segments if s.length < max_length]
 
 
 def remove_already_captured(
-    segments: list[VectorSegment],
-    captured_polygons: list[Polygon],
+    segments: List[VectorSegment],
+    captured_polygons: List[Polygon],
     buffer: float = 2.0,
-) -> list[VectorSegment]:
+) -> List[VectorSegment]:
     """
     Retire les segments dont le centre tombe à l'intérieur d'un polygone
     déjà détecté par le graph_extractor.
@@ -60,9 +61,9 @@ def remove_already_captured(
 
 
 def cluster_segments(
-    segments: list[VectorSegment],
+    segments: List[VectorSegment],
     config: DBSCANConfig,
-) -> list[tuple]:
+) -> List[Tuple]:
     """
     Applique DBSCAN sur les centres des segments.
     
@@ -116,9 +117,9 @@ def cluster_segments(
 
 
 def clusters_to_polygons(
-    clusters: list[tuple],
+    clusters: List[Tuple],
     cls_config: ClassifierConfig,
-) -> list[Polygon]:
+) -> List[Polygon]:
     """
     Convertit les clusters (bboxes) en polygones Shapely.
     Filtre par aire min/max.
@@ -133,11 +134,11 @@ def clusters_to_polygons(
 
 
 def run_dbscan_extraction(
-    segments: list[VectorSegment],
-    captured_polygons: list[Polygon],
+    segments: List[VectorSegment],
+    captured_polygons: List[Polygon],
     dbscan_config: DBSCANConfig,
     cls_config: ClassifierConfig,
-) -> list[Polygon]:
+) -> List[Polygon]:
     """
     Pipeline complète d'extraction par DBSCAN.
     

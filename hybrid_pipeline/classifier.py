@@ -21,6 +21,7 @@ Catégories de sortie :
 import math
 from dataclasses import dataclass
 from shapely.geometry import Polygon, Point
+from typing import Optional, List
 
 from .config import ClassifierConfig
 
@@ -109,7 +110,7 @@ def classify_polygon(
     poly: Polygon,
     config: ClassifierConfig,
     source: str = "graph",
-) -> str | None:
+) -> Optional[str]:
     """
     Classifie un polygone selon l'arbre de décision.
     
@@ -208,12 +209,12 @@ def classify_polygon(
 
 
 def classify_all(
-    polygons: list[Polygon],
+    polygons: List[Polygon],
     config: ClassifierConfig,
     source: str = "graph",
     page_index: int = 0,
     id_offset: int = 0,
-) -> list[DetectedComponent]:
+) -> List[DetectedComponent]:
     """
     Classifie une liste de polygones.
     

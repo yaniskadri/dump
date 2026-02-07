@@ -10,6 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from shapely.geometry import Polygon
+from typing import Optional, List, Tuple
 
 from .classifier import DetectedComponent
 from .pipeline import HybridPipeline
@@ -37,12 +38,12 @@ SOURCE_STYLES = {
 
 def visualize_page(
     pdf_path: str,
-    components: list[DetectedComponent],
+    components: List[DetectedComponent],
     page_index: int = 0,
-    figsize: tuple = (20, 14),
+    figsize: Tuple = (20, 14),
     show_ids: bool = False,
     show_metrics: bool = False,
-    title: str | None = None,
+    title: Optional[str] = None,
 ):
     """
     Affiche une page PDF avec les composants détectés en overlay.
@@ -156,7 +157,7 @@ def visualize_page(
 def quick_visualize(
     pdf_path: str,
     page_index: int = 0,
-    config: PipelineConfig | None = None,
+    config: Optional[PipelineConfig] = None,
     show_ids: bool = False,
     show_metrics: bool = False,
 ):

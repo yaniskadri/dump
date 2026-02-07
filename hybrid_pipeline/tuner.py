@@ -32,6 +32,7 @@ from pathlib import Path
 from dataclasses import asdict
 
 import optuna
+from typing import Optional, List, Dict, Tuple
 from shapely.geometry import Polygon, box
 
 from .config import (
@@ -49,7 +50,7 @@ from .classifier import DetectedComponent
 #                   SCORING FUNCTIONS
 # ══════════════════════════════════════════════════════════════
 
-def load_yolo_gt(label_path: str, page_width: float, page_height: float) -> list[dict]:
+def load_yolo_gt(label_path: str, page_width: float, page_height: float) -> List[Dict]:
     """
     Charge un fichier YOLO .txt et retourne les bboxes en coordonnées PDF.
     
@@ -83,8 +84,8 @@ def load_yolo_gt(label_path: str, page_width: float, page_height: float) -> list
 
 
 def score_supervised(
-    components: list[DetectedComponent],
-    gt_boxes: list[dict],
+    components: List[DetectedComponent],
+    gt_boxes: List[Dict],
     iou_threshold: float = 0.5,
 ) -> float:
     """
@@ -135,7 +136,7 @@ def score_supervised(
     return f1
 
 
-def score_heuristic(components: list[DetectedComponent]) -> float:
+def score_heuristic(components: List[DetectedComponent]) -> float:
     """
     Score heuristique (sans ground truth).
     
@@ -342,9 +343,9 @@ class PipelineTuner:
 
     def __init__(
         self,
-        pdf_paths: list[str],
-        gt_labels: dict[str, str] | None = None,
-        pages: list[int] | None = None,
+        pdf_paths: List[str],
+        gt_labels: Optional[Dict[str, str]] = None,
+        pages: Optional[List[int]] = None,
     ):
         self.pdf_paths = pdf_paths
         self.gt_labels = gt_labels or {}
@@ -406,9 +407,9 @@ class PipelineTuner:
     def run(
         self,
         n_trials: int = 100,
-        timeout: int | None = None,
+        timeout: Optional[int] = None,
         study_name: str = "pipeline_tuning",
-        storage: str | None = None,
+        storage: Optional[str] = None,
         show_progress: bool = True,
     ) -> PipelineConfig:
         """
@@ -645,7 +646,7 @@ class PipelineTuner:
 #               AUTO-CALIBRATION (SELF-OPTIMIZING)
 # ══════════════════════════════════════════════════════════════
 
-def diagnose_detections(components: list[DetectedComponent]) -> dict:
+def diagnose_detections(components: List[DetectedComponent]) -> Dict:
     """
     Analyse les détections et identifie les symptômes de mauvaise config.
     
@@ -848,9 +849,9 @@ class AutoCalibrator:
 
     def __init__(
         self,
-        pdf_paths: list[str],
-        gt_labels: dict[str, str] | None = None,
-        pages: list[int] | None = None,
+        pdf_paths: List[str],
+        gt_labels: Optional[Dict[str, str]] = None,
+        pages: Optional[List[int]] = None,
     ):
         self.pdf_paths = pdf_paths
         self.gt_labels = gt_labels or {}
@@ -858,7 +859,7 @@ class AutoCalibrator:
 
     def _run_and_diagnose(
         self, config: PipelineConfig,
-    ) -> tuple[list[DetectedComponent], dict, float]:
+    ) -> Tuple[List[DetectedComponent], Dict, float]:
         """Run pipeline with config and return components, symptoms, score."""
         all_components = []
 
@@ -905,7 +906,7 @@ class AutoCalibrator:
         max_iterations: int = 8,
         optuna_trials: int = 50,
         do_optuna_phase: bool = True,
-        output_path: str | None = None,
+        output_path: Optional[str] = None,
     ) -> PipelineConfig:
         """
         Lance l'auto-calibration complète.

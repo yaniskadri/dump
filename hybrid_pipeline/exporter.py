@@ -11,6 +11,7 @@ import cv2
 import json
 import numpy as np
 import os
+from typing import Optional, List, Dict
 
 from .config import ExportConfig
 from .classifier import DetectedComponent
@@ -35,7 +36,7 @@ def render_page_image(page: fitz.Page, dpi: int = 300) -> np.ndarray:
 
 
 def export_crops(
-    components: list[DetectedComponent],
+    components: List[DetectedComponent],
     page_image: np.ndarray,
     output_root: str,
     config: ExportConfig,
@@ -135,7 +136,7 @@ def export_crops(
 
 
 def export_metadata(
-    all_components: dict[int, list[DetectedComponent]],
+    all_components: Dict[int, List[DetectedComponent]],
     output_path: str,
     source_file: str,
 ) -> None:
@@ -172,11 +173,11 @@ def export_metadata(
 
 
 def export_yolo_labels(
-    components: list[DetectedComponent],
+    components: List[DetectedComponent],
     page_width: float,
     page_height: float,
     output_path: str,
-    category_map: dict[str, int] | None = None,
+    category_map: Optional[Dict[str, int]] = None,
 ) -> None:
     """
     Exporte les annotations au format YOLO (txt).

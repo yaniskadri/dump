@@ -26,6 +26,7 @@ Pourquoi ça marche :
 import math
 import networkx as nx
 from collections import defaultdict
+from typing import List, Dict, Tuple, Set
 
 from .vector_utils import VectorSegment
 
@@ -51,9 +52,9 @@ def _angles_collinear(a1: float, a2: float, tolerance_deg: float = 15.0) -> bool
 
 
 def build_segment_graph(
-    segments: list[VectorSegment],
+    segments: List[VectorSegment],
     precision: int = 1,
-) -> tuple[nx.Graph, dict]:
+) -> Tuple[nx.Graph, Dict]:
     """
     Construit un graphe où :
       - Nœuds = points de jonction (coordonnées arrondies)
@@ -64,9 +65,9 @@ def build_segment_graph(
     """
     G = nx.Graph()
     # Map: (node_a, node_b) -> list of VectorSegment
-    edge_to_segments: dict[tuple, list[VectorSegment]] = defaultdict(list)
+    edge_to_segments: Dict[Tuple, List[VectorSegment]] = defaultdict(list)
     # Map: node -> list of segments touching this node
-    node_to_segments: dict[tuple, list[VectorSegment]] = defaultdict(list)
+    node_to_segments: Dict[Tuple, List[VectorSegment]] = defaultdict(list)
 
     for seg in segments:
         p1 = _round_pt(seg.x1, seg.y1, precision)
@@ -85,12 +86,12 @@ def build_segment_graph(
 
 
 def identify_wire_segments(
-    segments: list[VectorSegment],
+    segments: List[VectorSegment],
     precision: int = 1,
     min_wire_length: float = 15.0,
     collinear_tolerance_deg: float = 15.0,
     min_chain_length: float = 20.0,
-) -> set[int]:
+) -> Set[int]:
     """
     Identifie les indices des segments qui sont des fils (wires).
 
@@ -116,13 +117,13 @@ def identify_wire_segments(
         return set()
 
     # Index segments for fast lookup
-    seg_index: dict[int, VectorSegment] = {i: seg for i, seg in enumerate(segments)}
+    seg_index: Dict[int, VectorSegment] = {i: seg for i, seg in enumerate(segments)}
 
     # Build graph
     G = nx.Graph()
     # Map: edge (normalized) -> list of (seg_index, VectorSegment)
-    edge_seg_map: dict[tuple, list[tuple[int, VectorSegment]]] = defaultdict(list)
-    node_seg_map: dict[tuple, list[int]] = defaultdict(list)  # node -> seg indices
+    edge_seg_map: Dict[Tuple, List[Tuple[int, VectorSegment]]] = defaultdict(list)
+    node_seg_map: Dict[Tuple, List[int]] = defaultdict(list)  # node -> seg indices
 
     for i, seg in enumerate(segments):
         p1 = _round_pt(seg.x1, seg.y1, precision)
@@ -136,7 +137,7 @@ def identify_wire_segments(
         node_seg_map[p2].append(i)
 
     degrees = dict(G.degree())
-    wire_indices: set[int] = set()
+    wire_indices: Set[int] = set()
 
     # ── A. Wire chains ──
     # Find paths through degree-2 nodes (wire routing paths).
@@ -254,12 +255,12 @@ def identify_wire_segments(
 
 
 def remove_wires(
-    segments: list[VectorSegment],
+    segments: List[VectorSegment],
     precision: int = 1,
     min_wire_length: float = 15.0,
     collinear_tolerance_deg: float = 15.0,
     min_chain_length: float = 20.0,
-) -> tuple[list[VectorSegment], list[VectorSegment]]:
+) -> Tuple[List[VectorSegment], List[VectorSegment]]:
     """
     Sépare les segments en composants et fils.
 

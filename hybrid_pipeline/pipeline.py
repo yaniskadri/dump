@@ -20,6 +20,7 @@ import fitz
 import os
 from shapely.geometry import Polygon, box as shp_box
 from shapely.ops import unary_union
+from typing import Optional, List, Dict
 
 from .config import PipelineConfig
 from .vector_utils import extract_segments_from_page, extract_text_blocks
@@ -66,9 +67,9 @@ def compute_containment(inner: Polygon, outer: Polygon) -> float:
 
 
 def proximity_merge_components(
-    components: list[DetectedComponent],
+    components: List[DetectedComponent],
     radius: float = 8.0,
-) -> list[DetectedComponent]:
+) -> List[DetectedComponent]:
     """
     Fusionne les composants proches en un seul (bounding box englobante).
     
@@ -135,7 +136,7 @@ def proximity_merge_components(
                 continue
 
     # Group by root
-    groups: dict[int, list[int]] = {}
+    groups: Dict[int, List[int]] = {}
     for i in range(n):
         root = find(i)
         groups.setdefault(root, []).append(i)
@@ -186,9 +187,9 @@ def proximity_merge_components(
 
 
 def post_classification_cleanup(
-    components: list[DetectedComponent],
+    components: List[DetectedComponent],
     containment_threshold: float = 0.8,
-) -> list[DetectedComponent]:
+) -> List[DetectedComponent]:
     """
     Nettoyage post-classification pour corriger les erreurs résiduelles.
     
@@ -254,10 +255,10 @@ def post_classification_cleanup(
 
 
 def deduplicate(
-    graph_components: list[DetectedComponent],
-    dbscan_components: list[DetectedComponent],
+    graph_components: List[DetectedComponent],
+    dbscan_components: List[DetectedComponent],
     iou_threshold: float = 0.3,
-) -> list[DetectedComponent]:
+) -> List[DetectedComponent]:
     """
     Fusionne les résultats Graph + DBSCAN en supprimant les doublons.
     
@@ -288,7 +289,7 @@ class HybridPipeline:
     et ouvertes, avec classification géométrique et export multi-format.
     """
 
-    def __init__(self, pdf_path: str, config: PipelineConfig | None = None):
+    def __init__(self, pdf_path: str, config: Optional[PipelineConfig] = None):
         """
         Args:
             pdf_path: Chemin vers le fichier PDF.
@@ -299,7 +300,7 @@ class HybridPipeline:
         self.doc = fitz.open(pdf_path)
         self.file_base = os.path.splitext(os.path.basename(pdf_path))[0]
 
-    def process_page(self, page_index: int = 0) -> list[DetectedComponent]:
+    def process_page(self, page_index: int = 0) -> List[DetectedComponent]:
         """
         Traite une page complète.
         
@@ -392,11 +393,11 @@ class HybridPipeline:
     def run(
         self,
         output_dir: str,
-        pages: list[int] | None = None,
+        pages: Optional[List[int]] = None,
         export_crops_flag: bool = True,
         export_json: bool = True,
         export_yolo: bool = False,
-    ) -> dict[int, list[DetectedComponent]]:
+    ) -> Dict[int, List[DetectedComponent]]:
         """
         Exécute la pipeline complète sur le PDF.
         
@@ -415,7 +416,7 @@ class HybridPipeline:
         if pages is None:
             pages = list(range(len(self.doc)))
 
-        all_results: dict[int, list[DetectedComponent]] = {}
+        all_results: Dict[int, List[DetectedComponent]] = {}
         total_crops = 0
 
         for page_idx in pages:

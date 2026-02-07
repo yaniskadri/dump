@@ -19,12 +19,13 @@ Pourquoi pas minimum_cycle_basis ?
 import networkx as nx
 from shapely.geometry import Polygon, box, LineString
 from shapely.ops import unary_union, polygonize
+from typing import Optional, List, Tuple, Dict
 
 from .config import GraphConfig, ClassifierConfig
 from .vector_utils import VectorSegment
 
 
-def build_graph(segments: list[VectorSegment], precision: int = 1) -> nx.Graph:
+def build_graph(segments: List[VectorSegment], precision: int = 1) -> nx.Graph:
     """
     Construit un graphe non-orienté à partir des segments vectoriels.
     Les coordonnées sont arrondies pour fusionner les nœuds proches.
@@ -43,7 +44,7 @@ def get_node_degrees(G: nx.Graph) -> dict:
     return dict(G.degree())
 
 
-def find_all_faces(segments: list[VectorSegment]) -> list[Polygon]:
+def find_all_faces(segments: List[VectorSegment]) -> List[Polygon]:
     """
     Utilise Shapely polygonize pour trouver toutes les faces fermées
     dans l'arrangement planaire des segments vectoriels.
@@ -98,11 +99,11 @@ def snap_to_graph(coord: tuple, node_degrees: dict, tolerance: float = 1.5) -> i
 
 
 def filter_by_node_degree(
-    faces: list[Polygon],
+    faces: List[Polygon],
     node_degrees: dict,
     config: GraphConfig,
     cls_config: ClassifierConfig,
-) -> tuple[list[Polygon], list[Polygon]]:
+) -> Tuple[List[Polygon], List[Polygon]]:
     """
     Filtre les faces par degré des nœuds + aire.
     
@@ -195,9 +196,9 @@ def filter_by_node_degree(
 
 
 def filter_isolated_empty(
-    candidates: list[Polygon],
-    text_bboxes: list[tuple],
-) -> list[Polygon]:
+    candidates: List[Polygon],
+    text_bboxes: List[Tuple],
+) -> List[Polygon]:
     """
     Filtre "Vide & Solitaire" : rejette les polygones qui sont à la fois
     vides de texte ET isolés (pas de voisin adjacent).
@@ -326,10 +327,10 @@ def _is_boundary_collinear(a: Polygon, b: Polygon, tolerance: float = 1.0) -> bo
 
 
 def smart_merge_faces(
-    faces: list[Polygon],
+    faces: List[Polygon],
     config: GraphConfig,
-    text_bboxes: list[tuple] | None = None,
-) -> list[Polygon]:
+    text_bboxes: Optional[List[Tuple]] = None,
+) -> List[Polygon]:
     """
     Regroupe les sous-faces qui font partie d'un même composant,
     SANS fusionner deux composants distincts qui se touchent.
@@ -438,7 +439,7 @@ def smart_merge_faces(
             union(i, j)
 
     # Regrouper par composant
-    groups: dict[int, list[int]] = {}
+    groups: Dict[int, List[int]] = {}
     for i in range(n):
         root = find(i)
         groups.setdefault(root, []).append(i)
@@ -469,11 +470,11 @@ def smart_merge_faces(
 
 
 def run_graph_extraction(
-    segments: list[VectorSegment],
-    text_bboxes: list[tuple],
+    segments: List[VectorSegment],
+    text_bboxes: List[Tuple],
     graph_config: GraphConfig,
     cls_config: ClassifierConfig,
-) -> list[Polygon]:
+) -> List[Polygon]:
     """
     Pipeline complète d'extraction par topologie vectorielle.
     

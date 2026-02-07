@@ -42,6 +42,7 @@ import argparse
 from pathlib import Path
 
 import torch
+from typing import Optional, List, Tuple
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
@@ -336,7 +337,7 @@ class ComponentClassifier:
         results = classifier.predict_batch(["crop1.png", "crop2.png"])
     """
 
-    def __init__(self, model_path: str, device: str | None = None):
+    def __init__(self, model_path: str, device: Optional[str] = None):
         checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
 
         self.class_names = checkpoint["class_names"]
@@ -360,7 +361,7 @@ class ComponentClassifier:
 
         self.transform = get_transforms(self.img_size, augment=False)
 
-    def predict(self, image_path: str) -> tuple[str, float]:
+    def predict(self, image_path: str) -> Tuple[str, float]:
         """
         Prédit la catégorie d'une image.
         
@@ -378,11 +379,11 @@ class ComponentClassifier:
 
         return self.class_names[pred_idx.item()], confidence.item()
 
-    def predict_batch(self, image_paths: list[str]) -> list[tuple[str, float]]:
+    def predict_batch(self, image_paths: List[str]) -> List[Tuple[str, float]]:
         """Prédit les catégories pour une liste d'images."""
         return [self.predict(p) for p in image_paths]
 
-    def predict_tensor(self, tensor: torch.Tensor) -> tuple[str, float]:
+    def predict_tensor(self, tensor: torch.Tensor) -> Tuple[str, float]:
         """Prédit à partir d'un tensor déjà transformé."""
         tensor = tensor.unsqueeze(0).to(self.device) if tensor.dim() == 3 else tensor.to(self.device)
 
@@ -399,9 +400,9 @@ class ComponentClassifier:
 # ══════════════════════════════════════════════════════════════
 
 def prepare_dataset_from_pipeline(
-    pdf_paths: list[str],
+    pdf_paths: List[str],
     output_dir: str = "dataset/crops",
-    pages: list[int] | None = None,
+    pages: Optional[List[int]] = None,
 ):
     """
     Génère un dataset de crops à partir de la pipeline.
