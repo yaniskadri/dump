@@ -1,0 +1,60 @@
+def is_wire_crossing_artifact(face, all_segments, text_blocks):
+    """
+    Détecte si une face est un artefact aux croisements de fils.
+    
+    Caractéristiques d'un croisement :
+    1. Petit carré/rectangle
+    2. Tous les sommets ont beaucoup de fils qui arrivent
+    3. Pas de texte dedans
+    4. Ratio périmètre/aire élevé
+    """
+    area = face.area
+    perimeter = face.length
+    
+    # Critère 1 : Petite taille
+    if area > 500:  # Les gros ne sont pas des croisements
+        return False
+    
+    # Critère 2 : Ratio périmètre/aire (carré aux croisements)
+    compactness = perimeter / math.sqrt(area) if area > 0 else 0
+    if compactness < 8:  # Forme très compacte
+        return False
+    
+    # Critère 3 : Texte présent → pas un croisement
+    if get_text_in_polygon(face, text_blocks):
+        return False
+    
+    # Critère 4 : Analyse topologique des sommets
+    vertices = list(face.exterior.coords)[:-1]
+    high_degree_vertices = 0
+    
+    for vertex in vertices:
+        # Compte les segments qui arrivent à ce vertex
+        nearby_segments = count_segments_near_point(
+            vertex, 
+            all_segments, 
+            tolerance=2.0
+        )
+        if nearby_segments >= 4:  # Croisement = 4+ fils
+            high_degree_vertices += 1
+    
+    # Si la majorité des sommets sont des croisements
+    if high_degree_vertices >= len(vertices) * 0.75:
+        return True
+    
+    return False
+
+def count_segments_near_point(point, segments, tolerance=2.0):
+    """Compte combien de segments passent près d'un point"""
+    px, py = point
+    count = 0
+    
+    for seg in segments:
+        # Distance point-segment
+        line = LineString([(seg.x1, seg.y1), (seg.x2, seg.y2)])
+        dist = Point(px, py).distance(line)
+        
+        if dist < tolerance:
+            count += 1
+    
+    return count
