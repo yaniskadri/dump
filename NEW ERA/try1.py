@@ -232,17 +232,30 @@ def extract_all_lines(pdf_path):
     return lines
 
 def sample_bezier_curve(control_points, num_samples=10):
+    """Robust bezier sampler handling 3 or 4 points."""
     t_values = np.linspace(0, 1, num_samples)
     points = []
-    # Ensure points are numpy arrays
     cps = [np.array(p) for p in control_points]
     
-    for t in t_values:
-        point = ((1-t)**3 * cps[0] +
-                3*(1-t)**2*t * cps[1] +
-                3*(1-t)*t**2 * cps[2] +
-                t**3 * cps[3])
-        points.append(point)
+    if len(cps) == 4:
+        # Cubic Bezier
+        p0, p1, p2, p3 = cps
+        for t in t_values:
+            point = ((1-t)**3 * p0 + 3*(1-t)**2*t * p1 + 3*(1-t)*t**2 * p2 + t**3 * p3)
+            points.append(point)
+    elif len(cps) == 3:
+        # Quadratic Bezier
+        p0, p1, p2 = cps
+        for t in t_values:
+            point = ((1-t)**2 * p0 + 2*(1-t)*t * p1 + t**2 * p2)
+            points.append(point)
+    else:
+        # Fallback: Just return start and end if malformed
+        if len(cps) >= 2:
+            points = [cps[0], cps[-1]]
+        elif len(cps) == 1:
+            points = [cps[0], cps[0]]
+            
     return points
 
 def build_line_graph(lines, tolerance=2.0):
